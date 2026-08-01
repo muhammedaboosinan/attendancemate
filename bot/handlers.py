@@ -2,7 +2,7 @@
 from datetime import date, datetime, timedelta
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -17,12 +17,11 @@ def button(text, data):
 
 
 def menu_keyboard():
-    return InlineKeyboardMarkup([
-        [button("Dashboard", "screen:dashboard"), button("Today", "screen:today")],
-        [button("Subjects", "screen:subjects"), button("Reports", "screen:reports")],
-        [button("Manage", "screen:manage"), button("Refresh", "screen:dashboard")],
-        [button("Help", "screen:help"), button("About", "screen:about")],
-    ])
+    return ReplyKeyboardMarkup(
+        [["Dashboard", "Today"], ["Subjects", "Reports"], ["Manage", "Refresh"]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 class BotHandlers:
@@ -31,7 +30,8 @@ class BotHandlers:
 
     async def _show(self, update, text, markup=None):
         if update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            inline_markup = markup if isinstance(markup, InlineKeyboardMarkup) else None
+            await update.callback_query.edit_message_text(text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
@@ -42,6 +42,19 @@ class BotHandlers:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await self._show(update, "*Attendance Mate*\n\nTrack your classes in a few taps.", menu_keyboard())
+
+    async def main_menu_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        destinations = {
+            "Dashboard": "dashboard",
+            "Today": "today",
+            "Subjects": "subjects",
+            "Reports": "reports",
+            "Manage": "manage",
+            "Refresh": "dashboard",
+        }
+        screen = destinations.get((update.message.text or "").strip())
+        if screen:
+            await self.render_screen(update, context, screen)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup(self._back()))

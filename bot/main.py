@@ -7,7 +7,7 @@ import logging
 import sys
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from bot.config import Config
 from bot.sheets import SheetsManager
 from bot.handlers import BotHandlers
@@ -44,6 +44,7 @@ def main():
         application.add_handler(CommandHandler("start", handlers.start_command))
         application.add_handler(CommandHandler("help", handlers.help_command))
         application.add_handler(CommandHandler("about", handlers.about_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.main_menu_message))
         application.add_handler(CallbackQueryHandler(handlers.button_callback, pattern=".*"))
 
         chat_id = int(Config.TELEGRAM_CHAT_ID) if Config.TELEGRAM_CHAT_ID else None
