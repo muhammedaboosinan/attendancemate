@@ -57,7 +57,7 @@ class ReminderScheduler:
                 await asyncio.sleep(60 * Config.CHECK_INTERVAL_MINUTES)
             except Exception as e:
                 logger.error(f"Error in check loop: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(5)
     
     async def _retry_loop(self):
         """Retry loop for 'Remind Me Later' requests."""
