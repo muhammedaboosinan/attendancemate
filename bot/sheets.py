@@ -4,6 +4,7 @@ Handles reading and writing data to/from Google Sheets.
 """
 import json
 from datetime import datetime, date
+import time
 from typing import Optional
 import logging
 import gspread
@@ -23,7 +24,22 @@ class SheetsManager:
     def __init__(self):
         self.client = None
         self.spreadsheet = None
+        self._worksheet_cache = {}
+        self._values_cache = {}
+        self._cache_ttl_seconds = 3
         self._connect()
+
+    def clear_cache(self):
+        self._values_cache.clear()
+
+    def _read_values(self, sheet_name: str, worksheet) -> list[list[str]]:
+        now = time.monotonic()
+        cached = self._values_cache.get(sheet_name)
+        if cached and now - cached[0] < self._cache_ttl_seconds:
+            return cached[1]
+        values = worksheet.get_all_values()
+        self._values_cache[sheet_name] = (now, values)
+        return values
     
     def _connect(self):
         """Initialize connection to Google Sheets."""
@@ -71,11 +87,17 @@ class SheetsManager:
     
     def _get_worksheet(self, sheet_name: str, create_if_missing: bool = True) -> Optional[gspread.Worksheet]:
         """Get a worksheet by name, creating it if needed."""
+        if sheet_name in self._worksheet_cache:
+            return self._worksheet_cache[sheet_name]
         try:
-            return self.spreadsheet.worksheet(sheet_name)
+            worksheet = self.spreadsheet.worksheet(sheet_name)
+            self._worksheet_cache[sheet_name] = worksheet
+            return worksheet
         except gspread.WorksheetNotFound:
             if create_if_missing:
-                return self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+                worksheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+                self._worksheet_cache[sheet_name] = worksheet
+                return worksheet
             return None
     
     def initialize_sheets(self):
@@ -166,7 +188,7 @@ class SheetsManager:
         if not subject_map:
             return {}
         
-        rows = subject_map.get_all_values()
+        rows = self._read_values("Subject_Map", subject_map)
         if len(rows) < 2:
             return {}
         
@@ -190,7 +212,7 @@ class SheetsManager:
         if not timetable:
             return {}
         
-        rows = timetable.get_all_values()
+        rows = self._read_values("Timetable", timetable)
         if len(rows) < 2:
             return {}
         
@@ -220,7 +242,7 @@ class SheetsManager:
         if not exceptions:
             return False
         
-        rows = exceptions.get_all_values()
+        rows = self._read_values("Exceptions", exceptions)
         if len(rows) < 2:
             return False
         
@@ -251,6 +273,7 @@ class SheetsManager:
             return False
         date_str = check_date.strftime("%Y-%m-%d")
         exceptions.append_row([date_str, scope, period or "", reason, "TRUE"])
+        self.clear_cache()
         return True
     
     def get_exceptions_for_date(self, check_date: date):
@@ -258,7 +281,7 @@ class SheetsManager:
         exceptions = self._get_worksheet("Exceptions")
         if not exceptions:
             return []
-        rows = exceptions.get_all_values()
+        rows = self._read_values("Exceptions", exceptions)
         if len(rows) < 2:
             return []
         date_str = check_date.strftime("%Y-%m-%d")
@@ -273,7 +296,7 @@ class SheetsManager:
         exceptions = self._get_worksheet("Exceptions")
         if not exceptions:
             return []
-        rows = exceptions.get_all_values()
+        rows = self._read_values("Exceptions", exceptions)
         if len(rows) < 2:
             return []
         days = set()
@@ -287,7 +310,7 @@ class SheetsManager:
         timetable = self._get_worksheet("Timetable")
         if not timetable:
             return 0
-        rows = timetable.get_all_values()
+        rows = self._read_values("Timetable", timetable)
         return max(len(rows) - 1, 0)
     
     def get_classes_taken(self) -> int:
@@ -295,7 +318,7 @@ class SheetsManager:
         timetable = self._get_worksheet("Timetable")
         if not timetable:
             return 0
-        rows = timetable.get_all_values()
+        rows = self._read_values("Timetable", timetable)
         if len(rows) < 2:
             return 0
         scheduled = 0
@@ -305,7 +328,7 @@ class SheetsManager:
         exceptions = self._get_worksheet("Exceptions")
         if not exceptions:
             return scheduled
-        exc_rows = exceptions.get_all_values()
+        exc_rows = self._read_values("Exceptions", exceptions)
         cancelled = 0
         for row in exc_rows[1:]:
             if len(row) >= 5 and row[1] == "period" and row[4].lower() == "true":
@@ -321,7 +344,7 @@ class SheetsManager:
         
         # Check for duplicate entries
         date_str = check_date.strftime("%Y-%m-%d")
-        rows = attendance_log.get_all_values()
+        rows = self._read_values("Attendance_Log", attendance_log)
         
         for i, row in enumerate(rows[1:], start=2):  # Skip header
             if len(row) >= 5:
@@ -331,6 +354,7 @@ class SheetsManager:
                     normalized = self.normalize_subject(raw_subject)
                     timestamp = datetime.now().isoformat()
                     attendance_log.update(f'F{i}:H{i}', [[status, timestamp, note]])
+                    self.clear_cache()
                     return True
         
         # Add new entry
@@ -339,6 +363,7 @@ class SheetsManager:
         attendance_log.append_row([
             date_str, day, period, raw_subject, normalized, status, timestamp, note
         ])
+        self.clear_cache()
         return True
 
     def get_attendance_entry(self, check_date: date, period: str) -> Optional[dict]:
@@ -348,7 +373,7 @@ class SheetsManager:
             return None
         date_str = check_date.strftime("%Y-%m-%d")
         matches = []
-        for row in attendance_log.get_all_values()[1:]:
+        for row in self._read_values("Attendance_Log", attendance_log)[1:]:
             if len(row) >= 8 and row[0] == date_str and row[2] == str(period):
                 matches.append(row)
         if not matches:
@@ -360,11 +385,22 @@ class SheetsManager:
             "status": row[5].lower(), "timestamp": row[6], "note": row[7]
         }
 
+    def get_subject_history(self, subject: str, limit: int = 12) -> list[dict]:
+        """Return recent attendance entries for one normalized subject."""
+        attendance_log = self._get_worksheet("Attendance_Log")
+        if not attendance_log:
+            return []
+        history = []
+        for row in self._read_values("Attendance_Log", attendance_log)[1:]:
+            if len(row) >= 8 and self.normalize_subject(row[4]) == subject:
+                history.append({"date": row[0], "period": row[2], "status": row[5].lower()})
+        return history[-limit:][::-1]
+
     def get_setting(self, key: str, default: str = "") -> str:
         settings = self._get_worksheet("Settings")
         if not settings:
             return default
-        for row in settings.get_all_values()[1:]:
+        for row in self._read_values("Settings", settings)[1:]:
             if len(row) >= 2 and row[0].strip().lower() == key.lower():
                 return row[1]
         return default
@@ -373,11 +409,13 @@ class SheetsManager:
         settings = self._get_worksheet("Settings")
         if not settings:
             return False
-        for index, row in enumerate(settings.get_all_values()[1:], start=2):
+        for index, row in enumerate(self._read_values("Settings", settings)[1:], start=2):
             if len(row) >= 1 and row[0].strip().lower() == key.lower():
                 settings.update(f"B{index}", [[str(value)]])
+                self.clear_cache()
                 return True
         settings.append_row([key, str(value)])
+        self.clear_cache()
         return True
 
     def deactivate_exception(self, check_date: date, scope: str, period: Optional[str] = None) -> bool:
@@ -385,11 +423,12 @@ class SheetsManager:
         if not exceptions:
             return False
         date_str = check_date.strftime("%Y-%m-%d")
-        for index, row in enumerate(exceptions.get_all_values()[1:], start=2):
+        for index, row in enumerate(self._read_values("Exceptions", exceptions)[1:], start=2):
             if (len(row) >= 5 and row[0] == date_str and row[1] == scope and
                     (scope != "period" or row[2] == str(period)) and
                     row[4].lower() == "true"):
                 exceptions.update(f"E{index}", [["FALSE"]])
+                self.clear_cache()
                 return True
         return False
     
@@ -400,7 +439,7 @@ class SheetsManager:
         if not attendance_log:
             return self._empty_stats()
         
-        rows = attendance_log.get_all_values()
+        rows = self._read_values("Attendance_Log", attendance_log)
         if len(rows) < 2:
             return self._empty_stats()
         

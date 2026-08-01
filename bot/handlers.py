@@ -54,13 +54,15 @@ class BotHandlers:
         }
         screen = destinations.get((update.message.text or "").strip())
         if screen:
+            if update.message.text.strip() == "Refresh":
+                self.sheets.clear_cache()
             await self.render_screen(update, context, screen)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup(self._back()))
+        await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup([self._back()]))
 
     async def about_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await self._show(update, "*Attendance Mate*\n\nPersonal attendance tracker\nVersion 2.0", InlineKeyboardMarkup(self._back()))
+        await self._show(update, "*Attendance Mate*\n\nPersonal attendance tracker\nVersion 2.0", InlineKeyboardMarkup([self._back()]))
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -85,14 +87,16 @@ class BotHandlers:
                 await self.setting_action(update, data.split(":", 1)[1])
             elif data.startswith("remind_later:"):
                 await self.remind_later(update, data.split(":", 1)[1])
-            elif data.startswith("subject_history:") or data.startswith("subject_edit:"):
+            elif data.startswith("subject_history:"):
                 subject = data.split(":", 1)[1]
-                await self.subject_page(update, subject)
+                await self.subject_history_page(update, subject)
+            elif data.startswith("subject_edit:"):
+                await self.subject_edit_page(update, data.split(":", 1)[1])
             else:
-                await self._show(update, "That action is no longer available.", InlineKeyboardMarkup(self._back()))
+                await self._show(update, "That action is no longer available.", InlineKeyboardMarkup([self._back()]))
         except Exception:
             logger.exception("Callback failed: %s", data)
-            await self._show(update, "Could not load that screen. Please refresh.", InlineKeyboardMarkup(self._back()))
+            await self._show(update, "Could not load that screen. Please refresh.", InlineKeyboardMarkup([self._back()]))
 
     async def render_screen(self, update, context, screen):
         if screen == "main":
@@ -120,7 +124,7 @@ class BotHandlers:
         elif screen == "settings":
             await self.settings_page(update)
         elif screen == "export":
-            await self._show(update, "*Export*\n\nYour attendance is available in the `Attendance_Log` sheet. You can export it as CSV from Google Sheets.", InlineKeyboardMarkup(self._back("manage")))
+            await self._show(update, "*Export*\n\nYour attendance is available in the `Attendance_Log` sheet. You can export it as CSV from Google Sheets.", InlineKeyboardMarkup([self._back("manage")]))
         elif screen == "help":
             await self.help_command(update, context)
         elif screen == "about":
@@ -167,7 +171,7 @@ class BotHandlers:
                 ])
             text = "\n".join(lines)
             rows.append([button("Cancel today", "exception:add_day")])
-        rows.append(self._back()[0])
+        rows.append(self._back())
         await self._show(update, text, InlineKeyboardMarkup(rows))
 
     async def mark_page(self, update, context, value):
@@ -175,7 +179,7 @@ class BotHandlers:
         target = date.fromisoformat(date_str)
         raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
         if not raw:
-            await self._show(update, "Class not found.", InlineKeyboardMarkup(self._back("today")))
+            await self._show(update, "Class not found.", InlineKeyboardMarkup([self._back("today")]))
             return
         context.user_data.update({"selected_date": date_str, "selected_period": period})
         current = self.sheets.get_attendance_entry(target, period)
@@ -191,12 +195,13 @@ class BotHandlers:
         target = date.fromisoformat(date_str)
         raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
         if not raw or not self.sheets.log_attendance(target, target.strftime("%A"), period, raw, status):
-            await self._show(update, "Could not save attendance.", InlineKeyboardMarkup(self._back("today")))
+            await self._show(update, "Could not save attendance.", InlineKeyboardMarkup([self._back("today")]))
             return
         scheduler = getattr(self, "scheduler", None)
         if scheduler:
             scheduler.answered_reminders.add(f"{date_str}:{period}")
         label = {"present": "Attendance saved", "absent": "Absent saved", "no_class": "No class marked"}[status]
+        logger.info("Attendance saved: date=%s period=%s subject=%s status=%s", date_str, period, self.sheets.normalize_subject(raw), status)
         await self._show(update, f"*{label}*\n\n{self.sheets.normalize_subject(raw)} - Period {period}", InlineKeyboardMarkup([
             [button("Edit", f"mark:{date_str}:{period}"), button("Today", "screen:today")],
             [button("Dashboard", "screen:dashboard")], self._back()
@@ -209,7 +214,7 @@ class BotHandlers:
         scheduler = getattr(self, "scheduler", None)
         if scheduler and raw:
             await scheduler.handle_remind_later(period, raw, target)
-        await self._show(update, "I will remind you once more shortly.", InlineKeyboardMarkup(self._back("today")))
+        await self._show(update, "I will remind you once more shortly.", InlineKeyboardMarkup([self._back("today")]))
 
     async def subjects_page(self, update):
         await self._show(update, "*Subjects*\n\nChoose a subject.", InlineKeyboardMarkup([
@@ -229,6 +234,24 @@ class BotHandlers:
             self._back("subjects")
         ]))
 
+    async def subject_history_page(self, update, subject):
+        history = self.sheets.get_subject_history(subject)
+        lines = [f"*{subject} history*"]
+        lines.extend(f"{item['date']} · Period {item['period']} · {item['status'].replace('_', ' ').title()}" for item in history)
+        if not history:
+            lines.append("\nNo entries yet.")
+        await self._show(update, "\n".join(lines), InlineKeyboardMarkup([
+            [button("Back to subject", f"subject:{subject}")], self._back("subjects")
+        ]))
+
+    async def subject_edit_page(self, update, subject):
+        history = self.sheets.get_subject_history(subject)
+        rows = [[button(f"{item['date']} P{item['period']}", f"mark:{item['date']}:{item['period']}")] for item in history]
+        if not rows:
+            rows.append([button("No entries to edit", f"subject:{subject}")])
+        rows.append([button("Back to subject", f"subject:{subject}")])
+        await self._show(update, f"*Edit {subject}*\n\nChoose an entry.", InlineKeyboardMarkup(rows))
+
     async def report_page(self, update, period):
         today = date.today()
         start = today - (timedelta(days=6) if period == "weekly" else timedelta(days=29) if period == "monthly" else timedelta(days=3650))
@@ -244,21 +267,22 @@ class BotHandlers:
             lines.append(f"\n*{day}*")
             for period in sorted(timetable[day], key=lambda value: int(value)):
                 lines.append(f"{period}. {self.sheets.normalize_subject(timetable[day][period])}")
-        await self._show(update, "\n".join(lines) if len(lines) > 1 else "*Timetable*\n\nNo timetable found.", InlineKeyboardMarkup(self._back("manage")))
+        await self._show(update, "\n".join(lines) if len(lines) > 1 else "*Timetable*\n\nNo timetable found.", InlineKeyboardMarkup([self._back("manage")]))
 
     async def exceptions_page(self, update):
         entries = self.sheets.get_days_with_exceptions()
         text = "*Exceptions*\n\n" + ("\n".join(entries) if entries else "No active exceptions.")
         await self._show(update, text, InlineKeyboardMarkup([
             [button("Add Day Holiday", "exception:add_day"), button("Add Period No Class", "exception:add_period")],
-            [button("Remove Today", "exception:remove_today")], self._back("manage")
+            [button("Remove Today", "exception:remove_today"), button("Remove Period", "exception:remove_period")],
+            self._back("manage")
         ]))
 
     async def exception_action(self, update, value):
         today = date.today()
         if value == "add_day":
             self.sheets.add_exception(today, "day", reason="Holiday")
-            await self._show(update, "Holiday added for today.", InlineKeyboardMarkup(self._back("exceptions")))
+            await self._show(update, "Holiday added for today.", InlineKeyboardMarkup([self._back("exceptions")]))
         elif value == "add_period":
             periods = self.sheets.get_timetable().get(today.strftime("%A"), {})
             rows = [[button(f"Period {p}", f"exception:add_period:{today.isoformat()}:{p}")] for p in sorted(periods, key=lambda x: int(x))]
@@ -266,10 +290,18 @@ class BotHandlers:
         elif value.startswith("add_period:"):
             _, date_str, period = value.split(":")
             self.sheets.add_exception(date.fromisoformat(date_str), "period", period=period, reason="No class")
-            await self._show(update, "No class marked.", InlineKeyboardMarkup(self._back("exceptions")))
+            await self._show(update, "No class marked.", InlineKeyboardMarkup([self._back("exceptions")]))
         elif value == "remove_today":
             removed = self.sheets.deactivate_exception(today, "day")
-            await self._show(update, "Exception removed." if removed else "No day exception found.", InlineKeyboardMarkup(self._back("exceptions")))
+            await self._show(update, "Exception removed." if removed else "No day exception found.", InlineKeyboardMarkup([self._back("exceptions")]))
+        elif value == "remove_period":
+            periods = [row[2] for row in self.sheets.get_exceptions_for_date(today) if len(row) >= 3 and row[1] == "period"]
+            rows = [[button(f"Remove period {period}", f"exception:remove_period:{today.isoformat()}:{period}")] for period in periods]
+            await self._show(update, "Choose a period exception:", InlineKeyboardMarkup(rows + [self._back("exceptions")]))
+        elif value.startswith("remove_period:"):
+            _, date_str, period = value.split(":")
+            removed = self.sheets.deactivate_exception(date.fromisoformat(date_str), "period", period)
+            await self._show(update, "Exception removed." if removed else "No period exception found.", InlineKeyboardMarkup([self._back("exceptions")]))
 
     async def settings_page(self, update):
         reminders = self.sheets.get_setting("reminders", "enabled")

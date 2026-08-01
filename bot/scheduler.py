@@ -25,6 +25,7 @@ class ReminderScheduler:
         self.answered_reminders = set()
         self.queued_retries = set()
         self.retry_queue = asyncio.Queue()
+        self._tasks = []
     
     async def start(self):
         """Start the scheduler."""
@@ -32,14 +33,19 @@ class ReminderScheduler:
         logger.info("Reminder scheduler started")
         
         # Start the check loop
-        asyncio.create_task(self._check_loop())
+        self._tasks = [
+            asyncio.create_task(self._check_loop()),
+            asyncio.create_task(self._retry_loop()),
+        ]
         
-        # Start the retry loop
-        asyncio.create_task(self._retry_loop())
-    
     async def stop(self):
         """Stop the scheduler."""
         self.running = False
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
         logger.info("Reminder scheduler stopped")
     
     async def _check_loop(self):
