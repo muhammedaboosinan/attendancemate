@@ -60,17 +60,31 @@ class BotHandlers:
                 self.sheets.clear_cache()
             await self.render_screen(update, context, screen)
         else:
-            result = await self.ai.ask(update.message.text or "")
+            prompt = update.message.text or ""
+            chat_id = update.effective_chat.id
+            previous_turns = self.sheets.get_recent_conversation(chat_id)
+            if self._asks_for_last_prompt(prompt):
+                last_prompt = next((turn["text"] for turn in reversed(previous_turns) if turn["role"] == "user"), None)
+                response_text = f"Your last prompt was:\n\n{last_prompt}" if last_prompt else "I do not have an earlier prompt saved yet."
+                self.sheets.add_conversation_turn(chat_id, "user", prompt)
+                self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
+                await update.message.reply_text(response_text)
+                return
+            self.sheets.add_conversation_turn(chat_id, "user", prompt)
+            result = await self.ai.ask(prompt, previous_turns)
             if result.get("pending"):
                 context.user_data["pending_ai_action"] = result["pending"]
-                await update.message.reply_text(
-                    f"{result['text']}\n\n{self._action_summary(result['pending'])}",
-                    reply_markup=InlineKeyboardMarkup([
-                        [button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]
-                    ]),
-                )
+                response_text = f"{result['text']}\n\n{self._action_summary(result['pending'])}"
+                await update.message.reply_text(response_text, reply_markup=InlineKeyboardMarkup([[button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]]))
             else:
-                await update.message.reply_text(result["text"])
+                response_text = result["text"]
+                await update.message.reply_text(response_text)
+            self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
+
+    @staticmethod
+    def _asks_for_last_prompt(prompt: str) -> bool:
+        text = prompt.lower()
+        return any(phrase in text for phrase in ("last prompt", "last message", "what did i say", "what was i asking"))
 
     @staticmethod
     def _action_summary(action):
@@ -138,6 +152,8 @@ class BotHandlers:
             self.ai.remember_action(action["prompt"], action)
         result = await __import__("asyncio").to_thread(self.ai.execute, action)
         await update.callback_query.edit_message_text(result)
+        if update.effective_chat:
+            self.sheets.add_conversation_turn(update.effective_chat.id, "assistant", result)
 
     async def render_screen(self, update, context, screen):
         if screen == "main":

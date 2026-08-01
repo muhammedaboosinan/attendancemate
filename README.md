@@ -167,6 +167,8 @@ timetable edits, exception removal, and supported settings always show a confirm
 before writing. Add `API_KEY_1`, `API_KEY_2`, and so on to a local `ai.env` file to enable
 Gemini round-robin requests. Confirmed reusable actions are stored in the Google Sheets
 `Prompt_Patterns` tab, never in a local JSON file. Never commit `ai.env`.
+Recent user and assistant turns are stored in the Google Sheets `Conversation_Memory`
+tab so short follow-up messages such as “whole day” retain their context after a restart.
 
 ### Google Sheets Structure
 

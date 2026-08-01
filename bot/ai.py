@@ -121,7 +121,7 @@ class GeminiAssistant:
             return json.dumps(reader() if reader else {"error": "Sheet is not available through this assistant."}, default=str)
         return json.dumps({"error": "This action changes data and must be confirmed."})
 
-    async def ask(self, prompt: str, _attempt: int = 0) -> dict:
+    async def ask(self, prompt: str, history: list[dict] | None = None, _attempt: int = 0) -> dict:
         direct = self._pattern_action(prompt) or self._holiday_action(prompt)
         if direct:
             direct["prompt"] = prompt
@@ -135,7 +135,12 @@ class GeminiAssistant:
                 tools=[types.Tool(function_declarations=self._declaration())],
                 temperature=0.2,
             )
-            response = await __import__("asyncio").to_thread(client.models.generate_content, model=Config.AI_MODEL, contents=prompt, config=config)
+            context = ""
+            if history:
+                context = "Recent conversation:\n" + "\n".join(
+                    f"{turn['role']}: {turn['text']}" for turn in history
+                ) + "\n\n"
+            response = await __import__("asyncio").to_thread(client.models.generate_content, model=Config.AI_MODEL, contents=context + "Current user message:\n" + prompt, config=config)
             calls = []
             text_parts = []
             for part in response.candidates[0].content.parts:
@@ -155,7 +160,7 @@ class GeminiAssistant:
         except Exception:
             logger.exception("Gemini request failed")
             if self.keys and _attempt + 1 < len(self.keys):
-                return await self.ask(prompt, _attempt + 1)
+                return await self.ask(prompt, history, _attempt + 1)
             return {"text": "AI is temporarily unavailable. Please try again or use the menu."}
 
     def execute(self, action: dict) -> str:

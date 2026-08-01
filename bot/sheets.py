@@ -187,6 +187,12 @@ class SheetsManager:
             rows = patterns.get_all_values()
             if not any(any(cell.strip() for cell in row) for row in rows):
                 patterns.append_row(["Prompt", "Action JSON", "Active", "Created At"])
+
+        memory = self._get_worksheet("Conversation_Memory")
+        if memory:
+            rows = memory.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                memory.append_row(["Chat ID", "Role", "Text", "Timestamp"])
     
     def get_subject_map(self) -> dict:
         """Get subject normalization mapping."""
@@ -424,6 +430,24 @@ class SheetsManager:
                 except json.JSONDecodeError:
                     logger.warning("Invalid Prompt_Patterns action for %s", normalized)
         return None
+
+    def add_conversation_turn(self, chat_id: int, role: str, text: str) -> bool:
+        memory = self._get_worksheet("Conversation_Memory")
+        if not memory:
+            return False
+        memory.append_row([str(chat_id), role, text[:4000], datetime.now().isoformat()])
+        self.clear_cache()
+        return True
+
+    def get_recent_conversation(self, chat_id: int, limit: int = 12) -> list[dict]:
+        memory = self._get_worksheet("Conversation_Memory")
+        if not memory:
+            return []
+        turns = []
+        for row in self._read_values("Conversation_Memory", memory)[1:]:
+            if len(row) >= 4 and row[0] == str(chat_id):
+                turns.append({"role": row[1], "text": row[2], "timestamp": row[3]})
+        return turns[-limit:]
 
     def save_prompt_pattern(self, prompt: str, action: dict) -> bool:
         patterns = self._get_worksheet("Prompt_Patterns")
