@@ -31,6 +31,14 @@ def _date_from_text(value: str) -> date | None:
     return None
 
 
+def _action_date(value: str) -> date:
+    """Parse dates returned by Gemini in ISO or common user formats."""
+    parsed = _date_from_text(str(value))
+    if parsed is None:
+        raise ValueError(f"Unsupported date format: {value}")
+    return parsed
+
+
 def _holiday_prompt(prompt: str) -> tuple[date, date] | None:
     text = prompt.lower()
     if not any(word in text for word in ("holiday", "no class", "no classes", "leave")):
@@ -166,7 +174,7 @@ class GeminiAssistant:
     def execute(self, action: dict) -> str:
         name, args = action["name"], action["args"]
         if name == "add_day_holidays":
-            start, end = date.fromisoformat(args["start"]), date.fromisoformat(args["end"])
+            start, end = _action_date(args["start"]), _action_date(args["end"])
             current = start
             count = 0
             while current <= end:
@@ -176,7 +184,7 @@ class GeminiAssistant:
                 current += timedelta(days=1)
             return f"Added {count} holiday date{'s' if count != 1 else ''}."
         if name == "add_period_exception":
-            target = date.fromisoformat(args["date"])
+            target = _action_date(args["date"])
             self.sheets.add_exception(target, "period", period=str(args["period"]), reason=args.get("reason", "No class"))
             return f"Period {args['period']} on {target.isoformat()} marked as no class."
         if name == "edit_timetable":
@@ -189,7 +197,7 @@ class GeminiAssistant:
                     return "Timetable entry updated."
             return "I could not find that timetable entry."
         if name == "remove_exception":
-            target = date.fromisoformat(args["date"])
+            target = _action_date(args["date"])
             scope = "period" if args.get("period") else "day"
             removed = self.sheets.deactivate_exception(target, scope, args.get("period"))
             return "Exception removed." if removed else "No matching active exception found."
