@@ -7,6 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from bot.sheets import SheetsManager
+from bot.ai import GeminiAssistant
 
 logger = logging.getLogger(__name__)
 SUBJECTS = ["ECO", "MINOR 1", "MINOR 2", "MDC", "AEC-LE", "AEC-EL"]
@@ -27,6 +28,7 @@ def menu_keyboard():
 class BotHandlers:
     def __init__(self, sheets: SheetsManager):
         self.sheets = sheets
+        self.ai = GeminiAssistant(sheets)
 
     async def _show(self, update, text, markup=None):
         if update.callback_query:
@@ -57,6 +59,30 @@ class BotHandlers:
             if update.message.text.strip() == "Refresh":
                 self.sheets.clear_cache()
             await self.render_screen(update, context, screen)
+        else:
+            result = await self.ai.ask(update.message.text or "")
+            if result.get("pending"):
+                context.user_data["pending_ai_action"] = result["pending"]
+                await update.message.reply_text(
+                    f"{result['text']}\n\n{self._action_summary(result['pending'])}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]
+                    ]),
+                )
+            else:
+                await update.message.reply_text(result["text"])
+
+    @staticmethod
+    def _action_summary(action):
+        name = action.get("name")
+        args = action.get("args", {})
+        if name == "add_day_holidays":
+            return f"Mark {args.get('start')} to {args.get('end')} as holidays?"
+        if name == "add_period_exception":
+            return f"Mark period {args.get('period')} on {args.get('date')} as no class?"
+        if name == "edit_timetable":
+            return f"Change timetable {args.get('day')} period {args.get('period')}?"
+        return "Apply this Google Sheet change?"
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup([self._back()]))
@@ -92,11 +118,26 @@ class BotHandlers:
                 await self.subject_history_page(update, subject)
             elif data.startswith("subject_edit:"):
                 await self.subject_edit_page(update, data.split(":", 1)[1])
+            elif data == "ai:confirm":
+                await self.ai_confirm(update, context)
+            elif data == "ai:cancel":
+                context.user_data.pop("pending_ai_action", None)
+                await query.edit_message_text("Cancelled.")
             else:
                 await self._show(update, "That action is no longer available.", InlineKeyboardMarkup([self._back()]))
         except Exception:
             logger.exception("Callback failed: %s", data)
             await self._show(update, "Could not load that screen. Please refresh.", InlineKeyboardMarkup([self._back()]))
+
+    async def ai_confirm(self, update, context):
+        action = context.user_data.pop("pending_ai_action", None)
+        if not action:
+            await update.callback_query.edit_message_text("That request has expired. Please ask again.")
+            return
+        if action.get("prompt"):
+            self.ai.remember_action(action["prompt"], action)
+        result = await __import__("asyncio").to_thread(self.ai.execute, action)
+        await update.callback_query.edit_message_text(result)
 
     async def render_screen(self, update, context, screen):
         if screen == "main":

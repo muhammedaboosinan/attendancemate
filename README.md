@@ -12,6 +12,7 @@ A Telegram bot for tracking class attendance with Google Sheets integration.
 - ⚠️ 75% threshold warnings
 - 🎉 Holiday and exception handling
 - 📝 Manual corrections and edits
+- 🤖 Gemini assistant for attendance questions and confirmed Sheet actions
 
 ## Project Structure
 
@@ -157,6 +158,14 @@ When a class ends, the bot sends a reminder with buttons:
 - ❌ Absent
 - ➖ No Class
 - ⏰ Remind Later
+
+### Gemini Assistant
+
+Send a normal message instead of a command to ask for an attendance summary or review.
+The assistant reads the live Google Sheets data. Changes such as holidays, no-class periods,
+timetable edits, exception removal, and supported settings always show a confirmation button
+before writing. Add `API_KEY_1`, `API_KEY_2`, and so on to a local `ai.env` file to enable
+Gemini round-robin requests. Never commit that file.
 
 ### Google Sheets Structure
 

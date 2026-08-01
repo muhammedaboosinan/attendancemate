@@ -1,8 +1,10 @@
 credentials.json
 token.env
 tester.env
+ai.env
 *.session
 logs/
 __pycache__/
 *.pyc
 qa_report.json
+ai_patterns.json
