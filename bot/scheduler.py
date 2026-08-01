@@ -97,7 +97,7 @@ class ReminderScheduler:
         if day_name not in timetable:
             return
         
-        # Time slots definition
+        # Legacy fallback for timetable rows without Start/End values.
         time_slots = {
             "1": (time(9, 30), time(10, 30)),
             "2": (time(10, 30), time(11, 30)),
@@ -119,18 +119,26 @@ class ReminderScheduler:
                 self.answered_reminders.add(f"{today.isoformat()}:{period_num}")
                 continue
             
-            # Check if period has ended
-            if period_num in time_slots:
+            configured_times = self.sheets.get_period_times(day_name, period_num)
+            if configured_times and configured_times[1]:
+                try:
+                    end_time = time.fromisoformat(configured_times[1])
+                except ValueError:
+                    logger.warning("Invalid end time for %s period %s: %s", day_name, period_num, configured_times[1])
+                    continue
+            elif period_num in time_slots:
                 _, end_time = time_slots[period_num]
+            else:
+                logger.warning("No end time configured for %s period %s", day_name, period_num)
+                continue
                 
-                # If current time is past the end time (within last 2 minutes or up to 5 minutes after)
-                if (current_time >= end_time and 
-                    current_time <= (datetime.combine(today, end_time) + timedelta(minutes=5)).time()):
+            # Send once after the configured class end, even if the bot restarted late.
+            if current_time >= end_time:
                     
-                    # Check if we already sent a reminder for this period today
-                    reminder_key = f"{today}_{period_num}"
-                    if reminder_key not in self.sent_reminders:
-                        await self._send_reminder(period_num, subject, today)
+                reminder_key = f"{today}_{period_num}"
+                if reminder_key not in self.sent_reminders:
+                    sent = await self._send_reminder(period_num, subject, today)
+                    if sent:
                         self.sent_reminders.add(reminder_key)
     
     async def _send_reminder(self, period: str, subject: str, check_date: date):
@@ -139,7 +147,7 @@ class ReminderScheduler:
             reminder_key = f"{check_date.isoformat()}:{period}"
             if reminder_key in self.answered_reminders:
                 return
-            text = f"⏰ *Class Ended!*\n\n"
+            text = "Class ended.\n\n"
             text += f"📚 {subject}\n"
             text += f"Period {period} has just finished.\n\n"
             text += f"Did you attend?"
@@ -159,14 +167,15 @@ class ReminderScheduler:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=reply_markup
             )
             
             logger.info(f"Reminder sent for period {period}: {subject}")
+            return True
             
         except Exception as e:
             logger.error(f"Failed to send reminder for period {period}: {e}")
+            return False
     
     async def handle_remind_later(self, period: str, subject: str, check_date: date):
         """Handle 'Remind Me Later' action."""

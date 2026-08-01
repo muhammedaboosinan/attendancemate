@@ -248,6 +248,16 @@ class SheetsManager:
         if day in timetable and period in timetable[day]:
             return timetable[day][period]
         return None
+
+    def get_period_times(self, day: str, period: str) -> tuple[str, str] | None:
+        """Return a timetable row's start and end time, if configured."""
+        timetable = self._get_worksheet("Timetable")
+        if not timetable:
+            return None
+        for row in self._read_values("Timetable", timetable)[1:]:
+            if len(row) >= 5 and row[0] == day and row[1] == str(period):
+                return row[3].strip(), row[4].strip()
+        return None
     
     def is_exception(self, check_date: date, period: Optional[str] = None) -> bool:
         """Check if a date or date+period is marked as an exception."""
