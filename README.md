@@ -169,6 +169,8 @@ Gemini round-robin requests. Confirmed reusable actions are stored in the Google
 `Prompt_Patterns` tab, never in a local JSON file. Never commit `ai.env`.
 Recent user and assistant turns are stored in the Google Sheets `Conversation_Memory`
 tab so short follow-up messages such as “whole day” retain their context after a restart.
+The bot uses `Asia/Kolkata` by default, so today, tomorrow, weekdays, reminders, and
+timestamps change at midnight IST. Override this with `TIMEZONE` in `token.env` if needed.
 
 ### Google Sheets Structure
 

@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from bot.sheets import SheetsManager
 from bot.ai import GeminiAssistant
+from bot.time_utils import now, today as local_today
 
 logger = logging.getLogger(__name__)
 SUBJECTS = ["ECO", "MINOR 1", "MINOR 2", "MDC", "AEC-LE", "AEC-EL"]
@@ -200,14 +201,14 @@ class BotHandlers:
         for subject in SUBJECTS:
             item = stats["by_subject"].get(subject, {"present": 0, "absent": 0})
             lines.append(f"{subject}: {self.sheets.calculate_subject_percentage(item):.1f}%")
-        lines.append(f"\nUpdated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        lines.append(f"\nUpdated: {now().strftime('%Y-%m-%d %H:%M')}")
         await self._show(update, "\n".join(lines), InlineKeyboardMarkup([
             [button("Refresh", "screen:dashboard"), button("Subjects", "screen:subjects")],
             [button("Today", "screen:today")], self._back()
         ]))
 
     async def today_page(self, update):
-        today = date.today()
+        today = local_today()
         day = today.strftime("%A")
         timetable = self.sheets.get_timetable().get(day, {})
         if self.sheets.is_exception(today):
@@ -310,7 +311,7 @@ class BotHandlers:
         await self._show(update, f"*Edit {subject}*\n\nChoose an entry.", InlineKeyboardMarkup(rows))
 
     async def report_page(self, update, period):
-        today = date.today()
+        today = local_today()
         start = today - (timedelta(days=6) if period == "weekly" else timedelta(days=29) if period == "monthly" else timedelta(days=3650))
         stats = self.sheets.get_attendance_stats(start, today)
         pct = self.sheets.calculate_percentage(stats)
@@ -336,7 +337,7 @@ class BotHandlers:
         ]))
 
     async def exception_action(self, update, value):
-        today = date.today()
+        today = local_today()
         if value == "add_day":
             self.sheets.add_exception(today, "day", reason="Holiday")
             await self._show(update, "Holiday added for today.", InlineKeyboardMarkup([self._back("exceptions")]))

@@ -9,6 +9,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from bot.config import Config
 from bot.sheets import SheetsManager
+from bot.time_utils import now, today as local_today
 import logging
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class ReminderScheduler:
         """Check if any period has ended and send reminders."""
         if self.sheets.get_setting("reminders", "enabled").lower() == "disabled":
             return
-        today = date.today()
+        today = local_today()
         day_name = today.strftime("%A")
         
         # Check if today is an exception (holiday)
@@ -89,8 +90,7 @@ class ReminderScheduler:
             return
         
         # Get current time
-        now = datetime.now()
-        current_time = now.time()
+        current_time = now().time()
         
         # Get timetable
         timetable = self.sheets.get_timetable()
@@ -125,7 +125,7 @@ class ReminderScheduler:
                 
                 # If current time is past the end time (within last 2 minutes or up to 5 minutes after)
                 if (current_time >= end_time and 
-                    current_time <= (datetime.combine(date.today(), end_time) + timedelta(minutes=5)).time()):
+                    current_time <= (datetime.combine(today, end_time) + timedelta(minutes=5)).time()):
                     
                     # Check if we already sent a reminder for this period today
                     reminder_key = f"{today}_{period_num}"

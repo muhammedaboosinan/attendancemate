@@ -10,6 +10,7 @@ import logging
 import gspread
 from google.oauth2.service_account import Credentials
 from bot.config import Config
+from bot.time_utils import now as local_now
 
 logger = logging.getLogger(__name__)
 
@@ -364,14 +365,14 @@ class SheetsManager:
                     row[3] == raw_subject):
                     # Update existing entry
                     normalized = self.normalize_subject(raw_subject)
-                    timestamp = datetime.now().isoformat()
+                    timestamp = local_now().isoformat()
                     attendance_log.update(f'F{i}:H{i}', [[status, timestamp, note]])
                     self.clear_cache()
                     return True
         
         # Add new entry
         normalized = self.normalize_subject(raw_subject)
-        timestamp = datetime.now().isoformat()
+        timestamp = local_now().isoformat()
         attendance_log.append_row([
             date_str, day, period, raw_subject, normalized, status, timestamp, note
         ])
@@ -435,7 +436,7 @@ class SheetsManager:
         memory = self._get_worksheet("Conversation_Memory")
         if not memory:
             return False
-        memory.append_row([str(chat_id), role, text[:4000], datetime.now().isoformat()])
+        memory.append_row([str(chat_id), role, text[:4000], local_now().isoformat()])
         self.clear_cache()
         return True
 
@@ -458,7 +459,7 @@ class SheetsManager:
             if len(row) >= 1 and row[0] == normalized:
                 return True
         import json
-        patterns.append_row([normalized, json.dumps(action), "TRUE", datetime.now().isoformat()])
+        patterns.append_row([normalized, json.dumps(action), "TRUE", local_now().isoformat()])
         self.clear_cache()
         return True
 

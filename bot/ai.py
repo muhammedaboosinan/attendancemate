@@ -11,13 +11,14 @@ from google.genai import types
 
 from bot.config import Config
 from bot.sheets import SheetsManager
+from bot.time_utils import date_context, today as local_today
 
 logger = logging.getLogger(__name__)
 
 
 def _date_from_text(value: str) -> date | None:
     value = value.lower().strip()
-    today = date.today()
+    today = local_today()
     if value == "today":
         return today
     if value == "tomorrow":
@@ -124,7 +125,7 @@ class GeminiAssistant:
                 return f"{subject}: {percentage:.1f}%\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats.get('no_class', 0)}"
             return f"Overall: {self.sheets.calculate_percentage(stats):.1f}%\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats['no_class']}"
         if name == "sheet_read":
-            allowed = {"timetable": self.sheets.get_timetable, "attendance_log": lambda: self.sheets.get_attendance_stats(), "exceptions": lambda: self.sheets.get_exceptions_for_date(date.today()), "settings": lambda: {key: self.sheets.get_setting(key) for key in ("threshold", "reminders", "reminder_delay")}}
+            allowed = {"timetable": self.sheets.get_timetable, "attendance_log": lambda: self.sheets.get_attendance_stats(), "exceptions": lambda: self.sheets.get_exceptions_for_date(local_today()), "settings": lambda: {key: self.sheets.get_setting(key) for key in ("threshold", "reminders", "reminder_delay")}}
             reader = allowed.get(args.get("sheet", "").lower())
             return json.dumps(reader() if reader else {"error": "Sheet is not available through this assistant."}, default=str)
         return json.dumps({"error": "This action changes data and must be confirmed."})
@@ -139,7 +140,7 @@ class GeminiAssistant:
             return {"text": "AI suggestions are not configured yet. Add Gemini keys to ai.env."}
         try:
             config = types.GenerateContentConfig(
-                system_instruction="You are Attendance Mate's concise attendance assistant. Read Google Sheet data through tools. Never invent values. For any write, edit, or delete, return the tool call for confirmation. Ask a short clarifying question if date, period, or target is ambiguous.",
+                system_instruction=f"You are Attendance Mate's concise attendance assistant. {date_context()} Use these dates and weekdays for today/tomorrow and date questions. Read Google Sheet data through tools. Never invent values. For any write, edit, or delete, return the tool call for confirmation. Ask a short clarifying question if date, period, or target is ambiguous.",
                 tools=[types.Tool(function_declarations=self._declaration())],
                 temperature=0.2,
             )

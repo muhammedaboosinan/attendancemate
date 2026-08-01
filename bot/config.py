@@ -33,6 +33,7 @@ class Config:
     # Scheduler configuration
     CHECK_INTERVAL_MINUTES: int = int(os.getenv("CHECK_INTERVAL_MINUTES", "1"))
     REMINDER_RETRY_MINUTES: int = int(os.getenv("REMINDER_RETRY_MINUTES", "5"))
+    TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Kolkata")
     AI_MODEL: str = os.getenv("AI_MODEL", "gemini-2.5-flash")
     AI_KEYS: list[str] = list(dict.fromkeys(
         value for key, value in sorted(os.environ.items())

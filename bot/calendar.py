@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from calendar import monthcalendar
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from bot.time_utils import today as local_today
 
 WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -8,7 +9,7 @@ WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 def build_calendar(current_date: date) -> InlineKeyboardMarkup:
     year = current_date.year
     month = current_date.month
-    today = date.today()
+    today = local_today()
 
     keyboard = []
 
