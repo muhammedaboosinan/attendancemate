@@ -82,74 +82,83 @@ class SheetsManager:
         """Initialize all required sheets with headers."""
         # Timetable sheet
         timetable = self._get_worksheet("Timetable")
-        if timetable and not timetable.get_all_values():
-            timetable.append_row(["Day", "Period", "Subject", "Start", "End"])
-            # Add sample timetable data
-            timetable_data = [
-                ["Monday", "1", "MINOR 1", "09:30", "10:30"],
-                ["Monday", "2", "ECO (VNV)", "10:30", "11:30"],
-                ["Monday", "3", "MDC", "11:30", "12:30"],
-                ["Monday", "4", "AEC-LE", "13:30", "14:30"],
-                ["Monday", "5", "MINOR 2", "14:30", "15:30"],
-                ["Tuesday", "1", "ECO (BKU)", "09:30", "10:30"],
-                ["Tuesday", "2", "MINOR 2", "10:30", "11:30"],
-                ["Tuesday", "3", "AEC-EL", "11:30", "12:30"],
-                ["Tuesday", "4", "MINOR 1", "13:30", "14:30"],
-                ["Tuesday", "5", "MINOR 1", "14:30", "15:30"],
-                ["Wednesday", "1", "MINOR 2", "09:30", "10:30"],
-                ["Wednesday", "2", "MDC", "10:30", "11:30"],
-                ["Wednesday", "3", "AEC-LE", "11:30", "12:30"],
-                ["Wednesday", "4", "AEC-EL", "13:30", "14:30"],
-                ["Wednesday", "5", "ECO (BKU)", "14:30", "15:30"],
-                ["Thursday", "1", "MINOR 1", "09:30", "10:30"],
-                ["Thursday", "2", "ECO", "10:30", "11:30"],
-                ["Thursday", "3", "ECO (VNV)", "11:30", "12:30"],
-                ["Thursday", "4", "AEC-EL", "13:30", "14:30"],
-                ["Thursday", "5", "AEC-LE", "14:30", "15:30"],
-                ["Friday", "1", "MDC", "09:30", "10:30"],
-                ["Friday", "2", "MINOR 1", "10:30", "11:30"],
-                ["Friday", "3", "AEC-EL", "11:30", "12:30"],
-                ["Friday", "4", "AEC-LE", "13:30", "14:30"],
-                ["Friday", "5", "MINOR 2", "14:30", "15:30"],
-            ]
-            for row in timetable_data:
-                timetable.append_row(row)
+        if timetable:
+            rows = timetable.get_all_values()
+            has_data = any(any(cell.strip() for cell in row) for row in rows)
+            if not has_data:
+                timetable.append_row(["Day", "Period", "Subject", "Start", "End"])
+                timetable_data = [
+                    ["Monday", "1", "MINOR 1", "09:30", "10:30"],
+                    ["Monday", "2", "ECO (VNV)", "10:30", "11:30"],
+                    ["Monday", "3", "MDC", "11:30", "12:30"],
+                    ["Monday", "4", "AEC-LE", "13:30", "14:30"],
+                    ["Monday", "5", "MINOR 2", "14:30", "15:30"],
+                    ["Tuesday", "1", "ECO (BKU)", "09:30", "10:30"],
+                    ["Tuesday", "2", "MINOR 2", "10:30", "11:30"],
+                    ["Tuesday", "3", "AEC-EL", "11:30", "12:30"],
+                    ["Tuesday", "4", "MINOR 1", "13:30", "14:30"],
+                    ["Tuesday", "5", "MINOR 1", "14:30", "15:30"],
+                    ["Wednesday", "1", "MINOR 2", "09:30", "10:30"],
+                    ["Wednesday", "2", "MDC", "10:30", "11:30"],
+                    ["Wednesday", "3", "AEC-LE", "11:30", "12:30"],
+                    ["Wednesday", "4", "AEC-EL", "13:30", "14:30"],
+                    ["Wednesday", "5", "ECO (BKU)", "14:30", "15:30"],
+                    ["Thursday", "1", "MINOR 1", "09:30", "10:30"],
+                    ["Thursday", "2", "ECO", "10:30", "11:30"],
+                    ["Thursday", "3", "ECO (VNV)", "11:30", "12:30"],
+                    ["Thursday", "4", "AEC-EL", "13:30", "14:30"],
+                    ["Thursday", "5", "AEC-LE", "14:30", "15:30"],
+                    ["Friday", "1", "MDC", "09:30", "10:30"],
+                    ["Friday", "2", "MINOR 1", "10:30", "11:30"],
+                    ["Friday", "3", "AEC-EL", "11:30", "12:30"],
+                    ["Friday", "4", "AEC-LE", "13:30", "14:30"],
+                    ["Friday", "5", "MINOR 2", "14:30", "15:30"],
+                ]
+                for row in timetable_data:
+                    timetable.append_row(row)
         
         # Attendance_Log sheet
         attendance_log = self._get_worksheet("Attendance_Log")
-        if attendance_log and not attendance_log.get_all_values():
-            attendance_log.append_row([
-                "Date", "Day", "Period", "Raw Subject", "Normalized Subject",
-                "Status", "Timestamp", "Note"
-            ])
+        if attendance_log:
+            rows = attendance_log.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                attendance_log.append_row([
+                    "Date", "Day", "Period", "Raw Subject", "Normalized Subject",
+                    "Status", "Timestamp", "Note"
+                ])
         
         # Subject_Map sheet
         subject_map = self._get_worksheet("Subject_Map")
-        if subject_map and not subject_map.get_all_values():
-            subject_map.append_row(["Raw Subject", "Normalized Subject"])
-            # Add normalization rules
-            subject_data = [
-                ["ECO", "ECO"],
-                ["ECO (VNV)", "ECO"],
-                ["ECO (BKU)", "ECO"],
-                ["MINOR 1", "MINOR 1"],
-                ["MINOR 2", "MINOR 2"],
-                ["MDC", "MDC"],
-                ["AEC-LE", "AEC-LE"],
-                ["AEC-EL", "AEC-EL"],
-            ]
-            for row in subject_data:
-                subject_map.append_row(row)
+        if subject_map:
+            rows = subject_map.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                subject_map.append_row(["Raw Subject", "Normalized Subject"])
+                subject_data = [
+                    ["ECO", "ECO"],
+                    ["ECO (VNV)", "ECO"],
+                    ["ECO (BKU)", "ECO"],
+                    ["MINOR 1", "MINOR 1"],
+                    ["MINOR 2", "MINOR 2"],
+                    ["MDC", "MDC"],
+                    ["AEC-LE", "AEC-LE"],
+                    ["AEC-EL", "AEC-EL"],
+                ]
+                for row in subject_data:
+                    subject_map.append_row(row)
         
         # Exceptions sheet
         exceptions = self._get_worksheet("Exceptions")
-        if exceptions and not exceptions.get_all_values():
-            exceptions.append_row(["Date", "Scope", "Period", "Reason", "Active"])
+        if exceptions:
+            rows = exceptions.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                exceptions.append_row(["Date", "Scope", "Period", "Reason", "Active"])
         
         # Settings sheet
         settings = self._get_worksheet("Settings")
-        if settings and not settings.get_all_values():
-            settings.append_row(["Key", "Value"])
+        if settings:
+            rows = settings.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                settings.append_row(["Key", "Value"])
     
     def get_subject_map(self) -> dict:
         """Get subject normalization mapping."""
