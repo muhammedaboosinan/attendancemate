@@ -181,6 +181,12 @@ class SheetsManager:
             rows = settings.get_all_values()
             if not any(any(cell.strip() for cell in row) for row in rows):
                 settings.append_row(["Key", "Value"])
+
+        patterns = self._get_worksheet("Prompt_Patterns")
+        if patterns:
+            rows = patterns.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                patterns.append_row(["Prompt", "Action JSON", "Active", "Created At"])
     
     def get_subject_map(self) -> dict:
         """Get subject normalization mapping."""
@@ -404,6 +410,33 @@ class SheetsManager:
             if len(row) >= 2 and row[0].strip().lower() == key.lower():
                 return row[1]
         return default
+
+    def get_prompt_pattern(self, prompt: str) -> Optional[dict]:
+        patterns = self._get_worksheet("Prompt_Patterns")
+        if not patterns:
+            return None
+        normalized = " ".join(prompt.lower().split())
+        for row in self._read_values("Prompt_Patterns", patterns)[1:]:
+            if len(row) >= 3 and row[0] == normalized and row[2].lower() == "true":
+                try:
+                    import json
+                    return json.loads(row[1])
+                except json.JSONDecodeError:
+                    logger.warning("Invalid Prompt_Patterns action for %s", normalized)
+        return None
+
+    def save_prompt_pattern(self, prompt: str, action: dict) -> bool:
+        patterns = self._get_worksheet("Prompt_Patterns")
+        if not patterns:
+            return False
+        normalized = " ".join(prompt.lower().split())
+        for row in self._read_values("Prompt_Patterns", patterns)[1:]:
+            if len(row) >= 1 and row[0] == normalized:
+                return True
+        import json
+        patterns.append_row([normalized, json.dumps(action), "TRUE", datetime.now().isoformat()])
+        self.clear_cache()
+        return True
 
     def set_setting(self, key: str, value: str) -> bool:
         settings = self._get_worksheet("Settings")

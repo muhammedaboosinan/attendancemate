@@ -165,7 +165,8 @@ Send a normal message instead of a command to ask for an attendance summary or r
 The assistant reads the live Google Sheets data. Changes such as holidays, no-class periods,
 timetable edits, exception removal, and supported settings always show a confirmation button
 before writing. Add `API_KEY_1`, `API_KEY_2`, and so on to a local `ai.env` file to enable
-Gemini round-robin requests. Never commit that file.
+Gemini round-robin requests. Confirmed reusable actions are stored in the Google Sheets
+`Prompt_Patterns` tab, never in a local JSON file. Never commit `ai.env`.
 
 ### Google Sheets Structure
 

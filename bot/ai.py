@@ -5,8 +5,6 @@ from datetime import date, timedelta
 import json
 import logging
 import re
-from pathlib import Path
-from threading import Lock
 
 from google import genai
 from google.genai import types
@@ -15,8 +13,6 @@ from bot.config import Config
 from bot.sheets import SheetsManager
 
 logger = logging.getLogger(__name__)
-PATTERNS_FILE = Config.BASE_DIR / "ai_patterns.json"
-PATTERN_LOCK = Lock()
 
 
 def _date_from_text(value: str) -> date | None:
@@ -77,36 +73,14 @@ class GeminiAssistant:
             self.clients[key] = genai.Client(api_key=key)
         return self.clients[key]
 
-    @staticmethod
-    def _load_patterns() -> list[dict]:
-        if not PATTERNS_FILE.exists():
-            return []
-        try:
-            return json.loads(PATTERNS_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-
-    @classmethod
-    def _save_pattern(cls, prompt: str, action: dict):
-        normalized = re.sub(r"\s+", " ", prompt.lower()).strip()
-        with PATTERN_LOCK:
-            patterns = cls._load_patterns()
-            if not any(item.get("prompt") == normalized for item in patterns):
-                patterns.append({"prompt": normalized, "action": action})
-                PATTERNS_FILE.write_text(json.dumps(patterns, indent=2), encoding="utf-8")
-
     def remember_action(self, prompt: str, action: dict):
-        self._save_pattern(prompt, {"name": action["name"], "args": action["args"]})
+        self.sheets.save_prompt_pattern(prompt, {"name": action["name"], "args": action["args"]})
 
-    @classmethod
-    def _pattern_action(cls, prompt: str) -> dict | None:
+    def _pattern_action(self, prompt: str) -> dict | None:
         normalized = re.sub(r"\s+", " ", prompt.lower()).strip()
-        for item in cls._load_patterns():
-            if item.get("prompt") == normalized:
-                action = item.get("action")
-                if any(word in normalized for word in ("today", "tomorrow")):
-                    return None
-                return action
+        action = self.sheets.get_prompt_pattern(normalized)
+        if action and not any(word in normalized for word in ("today", "tomorrow")):
+            return action
         return None
 
     def _holiday_action(self, prompt: str) -> dict | None:
