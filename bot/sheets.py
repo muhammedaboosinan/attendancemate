@@ -179,7 +179,10 @@ class SheetsManager:
     def normalize_subject(self, raw_subject: str) -> str:
         """Normalize subject name using the mapping."""
         mapping = self.get_subject_map()
-        return mapping.get(raw_subject, raw_subject)
+        normalized = mapping.get(raw_subject, raw_subject).strip()
+        if normalized.upper() in {"ECO (VNV)", "ECO (BKU)"}:
+            return "ECO"
+        return normalized.upper()
     
     def get_timetable(self) -> dict:
         """Get the complete timetable."""
@@ -337,8 +340,61 @@ class SheetsManager:
             date_str, day, period, raw_subject, normalized, status, timestamp, note
         ])
         return True
+
+    def get_attendance_entry(self, check_date: date, period: str) -> Optional[dict]:
+        """Return the latest log entry for a date and period."""
+        attendance_log = self._get_worksheet("Attendance_Log")
+        if not attendance_log:
+            return None
+        date_str = check_date.strftime("%Y-%m-%d")
+        matches = []
+        for row in attendance_log.get_all_values()[1:]:
+            if len(row) >= 8 and row[0] == date_str and row[2] == str(period):
+                matches.append(row)
+        if not matches:
+            return None
+        row = matches[-1]
+        return {
+            "date": row[0], "day": row[1], "period": row[2],
+            "raw_subject": row[3], "subject": self.normalize_subject(row[4]),
+            "status": row[5].lower(), "timestamp": row[6], "note": row[7]
+        }
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        settings = self._get_worksheet("Settings")
+        if not settings:
+            return default
+        for row in settings.get_all_values()[1:]:
+            if len(row) >= 2 and row[0].strip().lower() == key.lower():
+                return row[1]
+        return default
+
+    def set_setting(self, key: str, value: str) -> bool:
+        settings = self._get_worksheet("Settings")
+        if not settings:
+            return False
+        for index, row in enumerate(settings.get_all_values()[1:], start=2):
+            if len(row) >= 1 and row[0].strip().lower() == key.lower():
+                settings.update(f"B{index}", [[str(value)]])
+                return True
+        settings.append_row([key, str(value)])
+        return True
+
+    def deactivate_exception(self, check_date: date, scope: str, period: Optional[str] = None) -> bool:
+        exceptions = self._get_worksheet("Exceptions")
+        if not exceptions:
+            return False
+        date_str = check_date.strftime("%Y-%m-%d")
+        for index, row in enumerate(exceptions.get_all_values()[1:], start=2):
+            if (len(row) >= 5 and row[0] == date_str and row[1] == scope and
+                    (scope != "period" or row[2] == str(period)) and
+                    row[4].lower() == "true"):
+                exceptions.update(f"E{index}", [["FALSE"]])
+                return True
+        return False
     
-    def get_attendance_stats(self) -> dict:
+    def get_attendance_stats(self, start_date: Optional[date] = None,
+                             end_date: Optional[date] = None) -> dict:
         """Calculate attendance statistics."""
         attendance_log = self._get_worksheet("Attendance_Log")
         if not attendance_log:
@@ -359,23 +415,34 @@ class SheetsManager:
         
         for row in rows[1:]:  # Skip header
             if len(row) >= 6:
+                try:
+                    entry_date = date.fromisoformat(row[0])
+                except ValueError:
+                    continue
+                if start_date and entry_date < start_date:
+                    continue
+                if end_date and entry_date > end_date:
+                    continue
                 status = row[5].lower()
-                subject = row[4]  # Normalized subject
+                subject = self.normalize_subject(row[4])
                 period = row[2]
-                
-                stats["total"] += 1
+
                 stats[status] = stats.get(status, 0) + 1
+                if status in {"present", "absent"}:
+                    stats["total"] += 1
                 
                 # By subject
                 if subject not in stats["by_subject"]:
                     stats["by_subject"][subject] = {"present": 0, "absent": 0, "no_class": 0, "total": 0}
-                stats["by_subject"][subject]["total"] += 1
+                if status in {"present", "absent"}:
+                    stats["by_subject"][subject]["total"] += 1
                 stats["by_subject"][subject][status] = stats["by_subject"][subject].get(status, 0) + 1
                 
                 # By period
                 if period not in stats["by_period"]:
                     stats["by_period"][period] = {"present": 0, "absent": 0, "no_class": 0, "total": 0}
-                stats["by_period"][period]["total"] += 1
+                if status in {"present", "absent"}:
+                    stats["by_period"][period]["total"] += 1
                 stats["by_period"][period][status] = stats["by_period"][period].get(status, 0) + 1
         
         return stats
@@ -393,9 +460,6 @@ class SheetsManager:
     
     def calculate_percentage(self, stats: dict) -> float:
         """Calculate overall attendance percentage."""
-        if stats["total"] == 0:
-            return 0.0
-        
         actual_classes = stats["present"] + stats["absent"]
         if actual_classes == 0:
             return 0.0
@@ -404,9 +468,6 @@ class SheetsManager:
     
     def calculate_subject_percentage(self, subject_stats: dict) -> float:
         """Calculate attendance percentage for a subject."""
-        if subject_stats["total"] == 0:
-            return 0.0
-        
         actual_classes = subject_stats["present"] + subject_stats["absent"]
         if actual_classes == 0:
             return 0.0

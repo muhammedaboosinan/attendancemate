@@ -43,13 +43,7 @@ def main():
 
         application.add_handler(CommandHandler("start", handlers.start_command))
         application.add_handler(CommandHandler("help", handlers.help_command))
-        application.add_handler(CommandHandler("dashboard", handlers.dashboard_command))
-        application.add_handler(CommandHandler("today", handlers.today_command))
-        application.add_handler(CommandHandler("mark", handlers.mark_command))
-        application.add_handler(CommandHandler("nclass", handlers.nclass_command))
-        application.add_handler(CommandHandler("timetable", handlers.timetable_command))
-        application.add_handler(CommandHandler("menu", handlers.start_command))
-        application.add_handler(CommandHandler("stop", handlers.remove_menu_command))
+        application.add_handler(CommandHandler("about", handlers.about_command))
         application.add_handler(CallbackQueryHandler(handlers.button_callback, pattern=".*"))
 
         chat_id = int(Config.TELEGRAM_CHAT_ID) if Config.TELEGRAM_CHAT_ID else None
@@ -57,6 +51,8 @@ def main():
         if chat_id:
             bot_instance = application.bot
             scheduler = ReminderScheduler(bot_instance, sheets, chat_id)
+            application.bot_data["scheduler"] = scheduler
+            handlers.scheduler = scheduler
 
             async def post_init(application):
                 await scheduler.start()

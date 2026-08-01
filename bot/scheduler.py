@@ -22,6 +22,8 @@ class ReminderScheduler:
         self.chat_id = chat_id
         self.running = False
         self.sent_reminders = set()  # Track sent reminders to avoid duplicates
+        self.answered_reminders = set()
+        self.queued_retries = set()
         self.retry_queue = asyncio.Queue()
     
     async def start(self):
@@ -70,6 +72,8 @@ class ReminderScheduler:
     
     async def _check_periods(self):
         """Check if any period has ended and send reminders."""
+        if self.sheets.get_setting("reminders", "enabled").lower() == "disabled":
+            return
         today = date.today()
         day_name = today.strftime("%A")
         
@@ -104,6 +108,10 @@ class ReminderScheduler:
             # Skip if period is an exception
             if self.sheets.is_exception(today, period_num):
                 continue
+
+            if self.sheets.get_attendance_entry(today, period_num):
+                self.answered_reminders.add(f"{today.isoformat()}:{period_num}")
+                continue
             
             # Check if period has ended
             if period_num in time_slots:
@@ -122,6 +130,9 @@ class ReminderScheduler:
     async def _send_reminder(self, period: str, subject: str, check_date: date):
         """Send a reminder message."""
         try:
+            reminder_key = f"{check_date.isoformat()}:{period}"
+            if reminder_key in self.answered_reminders:
+                return
             text = f"⏰ *Class Ended!*\n\n"
             text += f"📚 {subject}\n"
             text += f"Period {period} has just finished.\n\n"
@@ -129,12 +140,12 @@ class ReminderScheduler:
             
             keyboard = [
                 [
-                    InlineKeyboardButton("✅ Present", callback_data=f"mark_{period}_present"),
-                    InlineKeyboardButton("❌ Absent", callback_data=f"mark_{period}_absent")
+                    InlineKeyboardButton("Present", callback_data=f"save:present:{check_date.isoformat()}:{period}"),
+                    InlineKeyboardButton("Absent", callback_data=f"save:absent:{check_date.isoformat()}:{period}")
                 ],
                 [
-                    InlineKeyboardButton("➖ No Class", callback_data=f"mark_{period}_no_class"),
-                    InlineKeyboardButton("⏰ Remind Later", callback_data=f"remind_later_{period}")
+                    InlineKeyboardButton("No Class", callback_data=f"save:no_class:{check_date.isoformat()}:{period}"),
+                    InlineKeyboardButton("Remind Later", callback_data=f"remind_later:{check_date.isoformat()}:{period}")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -151,17 +162,22 @@ class ReminderScheduler:
         except Exception as e:
             logger.error(f"Failed to send reminder for period {period}: {e}")
     
-    async def handle_remind_later(self, period: str, subject: str):
+    async def handle_remind_later(self, period: str, subject: str, check_date: date):
         """Handle 'Remind Me Later' action."""
-        today = date.today()
+        retry_key = f"{check_date.isoformat()}:{period}"
+        if retry_key in self.queued_retries or retry_key in self.answered_reminders:
+            return
+        self.queued_retries.add(retry_key)
         await self.retry_queue.put({
             "period": period,
             "subject": subject,
-            "date": today
+            "date": check_date
         })
         logger.info(f"Reminder for period {period} queued for later")
     
     def clear_sent_reminders(self):
         """Clear the sent reminders set (useful for testing or day changes)."""
         self.sent_reminders.clear()
+        self.answered_reminders.clear()
+        self.queued_retries.clear()
         logger.info("Cleared sent reminders")

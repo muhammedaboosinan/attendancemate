@@ -1,316 +1,281 @@
-from datetime import date
-from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ContextTypes
-from telegram.constants import ParseMode
-from bot.config import Config
-from bot.sheets import SheetsManager
-from bot.calendar import build_calendar, parse_calendar_selection
+"""Button-first Telegram screens for the attendance bot."""
+from datetime import date, datetime, timedelta
 import logging
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+
+from bot.sheets import SheetsManager
+
 logger = logging.getLogger(__name__)
+SUBJECTS = ["ECO", "MINOR 1", "MINOR 2", "MDC", "AEC-LE", "AEC-EL"]
 
-user_states = {}
+
+def button(text, data):
+    return InlineKeyboardButton(text, callback_data=data)
 
 
-def main_menu_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["📊 Dashboard", "📅 Today"],
-            ["✅ Mark Att.", "🚫 No Class Days"],
-            ["❓ Help"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+def menu_keyboard():
+    return InlineKeyboardMarkup([
+        [button("Dashboard", "screen:dashboard"), button("Today", "screen:today")],
+        [button("Subjects", "screen:subjects"), button("Reports", "screen:reports")],
+        [button("Manage", "screen:manage"), button("Refresh", "screen:dashboard")],
+        [button("Help", "screen:help"), button("About", "screen:about")],
+    ])
 
 
 class BotHandlers:
     def __init__(self, sheets: SheetsManager):
         self.sheets = sheets
 
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        logger.info(f"User {user_id} started the bot")
-        text = (
-            "👋 *Welcome to Attendance Bot!*\n\n"
-            "I'll help you track your class attendance and remind you to mark it.\n\n"
-            "Use the menu below or type a command."
-        )
-        markup = main_menu_keyboard()
-        if update.message:
-            await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-        else:
+    async def _show(self, update, text, markup=None):
+        if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
+    @staticmethod
+    def _back(target="main"):
+        return [button("Back", f"screen:{target}")]
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.user_data.clear()
+        await self._show(update, "*Attendance Mate*\n\nTrack your classes in a few taps.", menu_keyboard())
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = (
-            "❓ *Commands*\n\n"
-            "/start - Welcome + main menu\n"
-            "/dashboard - Attendance stats\n"
-            "/today - Today's schedule\n"
-            "/mark - Mark attendance for a date/period\n"
-            "/nclass - Mark no-class day/period\n"
-            "/timetable - View timetable\n"
-            "/help - This message\n"
-            "/menu - Show main menu\n"
-            "/stop - Hide menu\n"
-        )
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup(self._back()))
 
-    async def dashboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        stats = self.sheets.get_attendance_stats()
-        total_scheduled = self.sheets.get_total_scheduled_classes()
-        classes_taken = self.sheets.get_classes_taken()
-        overall_pct = self.sheets.calculate_percentage(stats)
-
-        text = "📊 *Attendance Dashboard*\n\n"
-        text += f"📋 *Total Scheduled:* {total_scheduled}\n"
-        text += f"📅 *Classes Taken:* {classes_taken}\n"
-        text += f"✅ *Present:* {stats['present']}\n"
-        text += f"❌ *Absent:* {stats['absent']}\n"
-        text += f"➖ *No Class:* {stats['no_class']}\n\n"
-        text += f"📈 *Overall:* {overall_pct:.1f}%\n\n"
-
-        if stats["by_subject"]:
-            text += "📚 *Subject-wise:*\n"
-            for subject, subj_stats in sorted(stats["by_subject"].items()):
-                subj_pct = self.sheets.calculate_subject_percentage(subj_stats)
-                text += f"  • {subject}: {subj_pct:.1f}% ({subj_stats['present']} present, {subj_stats['absent']} absent)\n"
-
-        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]]
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-    async def today_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        today = date.today()
-        day_name = today.strftime("%A")
-        text, keyboard = self._build_today_text(day_name, today)
-        markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        if update.message:
-            await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-
-    async def timetable_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        timetable = self.sheets.get_timetable()
-        if not timetable:
-            await update.message.reply_text("No timetable found.")
-            return
-        lines = ["📚 *Timetable*"]
-        for day in sorted(timetable.keys()):
-            lines.append(f"\n*{day}*")
-            for period in sorted(timetable[day].keys(), key=lambda x: int(x)):
-                lines.append(f"Period {period}: {timetable[day][period]}")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-    async def mark_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        context.user_data["flow"] = "mark"
-        calendar_markup = build_calendar(date.today())
-        if update.message:
-            await update.message.reply_text("📅 Select date:", reply_markup=calendar_markup)
-        else:
-            await update.callback_query.edit_message_text("📅 Select date:", reply_markup=calendar_markup)
-
-    async def nclass_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        context.user_data["flow"] = "nclass"
-        calendar_markup = build_calendar(date.today())
-        if update.message:
-            await update.message.reply_text("📅 Select date:", reply_markup=calendar_markup)
-        else:
-            await update.callback_query.edit_message_text("📅 Select date:", reply_markup=calendar_markup)
-
-    async def remove_menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Menu hidden.", reply_markup=ReplyKeyboardRemove())
+    async def about_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._show(update, "*Attendance Mate*\n\nPersonal attendance tracker\nVersion 2.0", InlineKeyboardMarkup(self._back()))
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        data = query.data
+        data = query.data or ""
+        try:
+            if data == "screen:main":
+                await self.start_command(update, context)
+            elif data.startswith("screen:"):
+                await self.render_screen(update, context, data.split(":", 1)[1])
+            elif data.startswith("subject:"):
+                await self.subject_page(update, data.split(":", 1)[1])
+            elif data.startswith("mark:"):
+                await self.mark_page(update, context, data.split(":", 1)[1])
+            elif data.startswith("save:"):
+                await self.save_status(update, data.split(":", 1)[1])
+            elif data.startswith("exception:"):
+                await self.exception_action(update, data.split(":", 1)[1])
+            elif data.startswith("report:"):
+                await self.report_page(update, data.split(":", 1)[1])
+            elif data.startswith("setting:"):
+                await self.setting_action(update, data.split(":", 1)[1])
+            elif data.startswith("remind_later:"):
+                await self.remind_later(update, data.split(":", 1)[1])
+            elif data.startswith("subject_history:") or data.startswith("subject_edit:"):
+                subject = data.split(":", 1)[1]
+                await self.subject_page(update, subject)
+            else:
+                await self._show(update, "That action is no longer available.", InlineKeyboardMarkup(self._back()))
+        except Exception:
+            logger.exception("Callback failed: %s", data)
+            await self._show(update, "Could not load that screen. Please refresh.", InlineKeyboardMarkup(self._back()))
 
-        if data == "back_main":
+    async def render_screen(self, update, context, screen):
+        if screen == "main":
             await self.start_command(update, context)
-            return
+        elif screen == "dashboard":
+            await self.dashboard_page(update)
+        elif screen == "today":
+            await self.today_page(update)
+        elif screen == "subjects":
+            await self.subjects_page(update)
+        elif screen == "reports":
+            await self._show(update, "*Reports*\n\nChoose a summary.", InlineKeyboardMarkup([
+                [button("Weekly", "report:weekly"), button("Monthly", "report:monthly")],
+                [button("Overall", "report:overall")], self._back()
+            ]))
+        elif screen == "manage":
+            await self._show(update, "*Manage*\n\nTimetable, exceptions, settings, and export.", InlineKeyboardMarkup([
+                [button("Timetable", "screen:timetable"), button("Exceptions", "screen:exceptions")],
+                [button("Settings", "screen:settings"), button("Export", "screen:export")], self._back()
+            ]))
+        elif screen == "timetable":
+            await self.timetable_page(update)
+        elif screen == "exceptions":
+            await self.exceptions_page(update)
+        elif screen == "settings":
+            await self.settings_page(update)
+        elif screen == "export":
+            await self._show(update, "*Export*\n\nYour attendance is available in the `Attendance_Log` sheet. You can export it as CSV from Google Sheets.", InlineKeyboardMarkup(self._back("manage")))
+        elif screen == "help":
+            await self.help_command(update, context)
+        elif screen == "about":
+            await self.about_command(update, context)
 
-        if data.startswith("calendar:"):
-            await self.handle_calendar(query, context, data)
-            return
+    async def dashboard_page(self, update):
+        stats = self.sheets.get_attendance_stats()
+        pct = self.sheets.calculate_percentage(stats)
+        threshold = float(self.sheets.get_setting("threshold", "75") or 75)
+        margin = self.sheets.can_miss_before_threshold(stats, threshold)
+        status = "Safe" if pct >= threshold else "At Risk"
+        if threshold <= pct < threshold + 5:
+            status = "Warning"
+        miss_text = "No recorded classes yet" if margin == -1 else f"You can still miss {margin} more class{'es' if margin != 1 else ''}"
+        lines = [f"*Dashboard*\n\nOverall: *{pct:.1f}%*\nStatus: *{status}*", miss_text]
+        for subject in SUBJECTS:
+            item = stats["by_subject"].get(subject, {"present": 0, "absent": 0})
+            lines.append(f"{subject}: {self.sheets.calculate_subject_percentage(item):.1f}%")
+        lines.append(f"\nUpdated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        await self._show(update, "\n".join(lines), InlineKeyboardMarkup([
+            [button("Refresh", "screen:dashboard"), button("Subjects", "screen:subjects")],
+            [button("Today", "screen:today")], self._back()
+        ]))
 
-        if data.startswith("calendar_nav:"):
-            await self.handle_calendar_nav(query, context, data)
-            return
-
-        if data.startswith("mark_period_") or data.startswith("mark_status_"):
-            await self.handle_mark_flow(query, context, data)
-            return
-
-        if data.startswith("nclass_"):
-            await self.handle_nclass_flow(query, context, data)
-            return
-
-        if data == "today":
-            await self.today_command(update, context)
-            return
-
-        if data == "dashboard":
-            await self.dashboard_command(update, context)
-            return
-
-        await query.edit_message_text("❌ Unknown action. Please try again.")
-
-    async def handle_calendar(self, query, context: ContextTypes.DEFAULT_TYPE, data: str):
-        selected_date, _ = parse_calendar_selection(data)
-        if not selected_date:
-            return
-        flow = context.user_data.get("flow")
-        if flow == "mark":
-            await self._show_periods_for_date(query, selected_date, context)
-        elif flow == "nclass":
-            keyboard = [
-                [
-                    InlineKeyboardButton("🗓️ Entire Day", callback_data=f"nclass_day:{selected_date.isoformat()}"),
-                    InlineKeyboardButton("⏰ Specific Period", callback_data=f"nclass_periods:{selected_date.isoformat()}"),
-                ],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
-            ]
-            await query.edit_message_text("Mark entire day as no-class, or a specific period?", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-        else:
-            await query.edit_message_text("Use /mark or /nclass to start a flow.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]]))
-
-    async def handle_calendar_nav(self, query, context: ContextTypes.DEFAULT_TYPE, data: str):
-        _, offset = parse_calendar_selection(data)
-        if offset is None:
-            return
-        current_calendar = query.reply_markup
-        try:
-            header_text = current_calendar.inline_keyboard[0][1].text
-        except Exception:
-            header_text = ""
-        from datetime import date as dtdate
-        try:
-            current_date = dtdate.strptime(header_text, "%B %Y").replace(day=1)
-        except Exception:
-            current_date = date.today()
-        month = current_date.month - 1 + offset
-        year = current_date.year + month // 12
-        month = month % 12 + 1
-        day = min(current_date.day, [31, 29 if year % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
-        new_date = date(year, month, day)
-        await query.edit_message_reply_markup(reply_markup=build_calendar(new_date))
-
-    async def _show_periods_for_date(self, query, target_date: date, context: ContextTypes.DEFAULT_TYPE):
-        day_name = target_date.strftime("%A")
-        timetable = self.sheets.get_timetable()
-        periods = timetable.get(day_name, {})
-        if not periods:
-            await query.edit_message_text("No classes scheduled for this day.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-            return
-        if self.sheets.is_exception(target_date):
-            await query.edit_message_text("🎉 This day is marked as a holiday.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-            return
-        keyboard = []
-        for period_num in sorted(periods.keys(), key=lambda x: int(x)):
-            if self.sheets.is_exception(target_date, period_num):
-                continue
-            subject = periods[period_num]
-            keyboard.append([InlineKeyboardButton(f"Period {period_num}: {subject}", callback_data=f"mark_period_{period_num}:{target_date.isoformat()}")])
-        if not keyboard:
-            await query.edit_message_text("All periods are cancelled for this date.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-            return
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
-        await query.edit_message_text(f"Select period for *{day_name}, {target_date.isoformat()}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-    async def handle_mark_flow(self, query, context: ContextTypes.DEFAULT_TYPE, data: str):
-        if data.startswith("mark_period_"):
-            rest = data[len("mark_period_"):]
-            period, date_str = rest.split(":", 1)
-            target_date = date.fromisoformat(date_str)
-            day_name = target_date.strftime("%A")
-            raw_subject = self.sheets.get_class_for_period(day_name, period)
-            if not raw_subject:
-                await query.edit_message_text("Class not found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]))
-                return
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Present", callback_data=f"mark_status_present:{period}:{date_str}"),
-                    InlineKeyboardButton("❌ Absent", callback_data=f"mark_status_absent:{period}:{date_str}"),
-                    InlineKeyboardButton("➖ No Class", callback_data=f"mark_status_no_class:{period}:{date_str}"),
-                ],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
-            ]
-            text = f"Mark *{raw_subject}* — Period {period} on {date_str}"
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-            return
-
-        if data.startswith("mark_status_"):
-            rest = data[len("mark_status_"):]
-            status, period, date_str = rest.split(":", 2)
-            target_date = date.fromisoformat(date_str)
-            day_name = target_date.strftime("%A")
-            raw_subject = self.sheets.get_class_for_period(day_name, period)
-            if not raw_subject:
-                await query.edit_message_text("Class not found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]))
-                return
-            success = self.sheets.log_attendance(target_date, day_name, period, raw_subject, status)
-            if success:
-                status_emoji = {"present": "✅", "absent": "❌", "no_class": "➖"}
-                text = f"{status_emoji.get(status, '✓')} *Attendance Marked*\n\n📚 {raw_subject}\n⏰ Period {period}\n📅 {date_str}\nStatus: {status.title()}"
-            else:
-                text = "❌ Failed to mark attendance."
-            keyboard = [
-                [InlineKeyboardButton("📅 Today", callback_data="today")],
-                [InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")],
-                [InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")],
-            ]
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-            return
-
-    async def handle_nclass_flow(self, query, context: ContextTypes.DEFAULT_TYPE, data: str):
-        if data.startswith("nclass_day:"):
-            date_str = data.split(":", 1)[1]
-            target_date = date.fromisoformat(date_str)
-            self.sheets.add_exception(target_date, "day", reason="Holiday")
-            await query.edit_message_text(f"✅ {date_str} marked as holiday.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-            return
-        if data.startswith("nclass_periods:"):
-            date_str = data.split(":", 1)[1]
-            target_date = date.fromisoformat(date_str)
-            day_name = target_date.strftime("%A")
-            timetable = self.sheets.get_timetable()
-            periods = timetable.get(day_name, {})
-            if self.sheets.is_exception(target_date):
-                await query.edit_message_text("This date is already a holiday.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-                return
-            keyboard = []
-            for period_num in sorted(periods.keys(), key=lambda x: int(x)):
-                if self.sheets.is_exception(target_date, period_num):
-                    continue
-                subject = periods[period_num]
-                keyboard.append([InlineKeyboardButton(f"Period {period_num}: {subject}", callback_data=f"nclass_period:{period_num}:{date_str}")])
-            keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
-            await query.edit_message_text(f"Select period for *{date_str}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-            return
-        if data.startswith("nclass_period:"):
-            _, period, date_str = data.split(":", 2)
-            target_date = date.fromisoformat(date_str)
-            self.sheets.add_exception(target_date, "period", period=period, reason="Cancelled")
-            await query.edit_message_text(f"✅ Period {period} on {date_str} marked as cancelled.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]]), parse_mode=ParseMode.MARKDOWN)
-            return
-
-    def _build_today_text(self, day_name: str, today: date):
+    async def today_page(self, update):
+        today = date.today()
+        day = today.strftime("%A")
+        timetable = self.sheets.get_timetable().get(day, {})
         if self.sheets.is_exception(today):
-            return f"📅 *Today ({day_name}) - {today}*\n\n🎉 Holiday! No classes today.", []
+            text = f"*Today, {day}*\n\nNo class. This day is marked as a holiday."
+            rows = [[button("Manage exceptions", "screen:exceptions")]]
+        elif not timetable:
+            text, rows = f"*Today, {day}*\n\nNo classes scheduled.", []
+        else:
+            lines, rows = [f"*Today, {day}*\n"], []
+            for period in sorted(timetable, key=lambda value: int(value)):
+                subject = self.sheets.normalize_subject(timetable[period])
+                entry = self.sheets.get_attendance_entry(today, period)
+                state = entry["status"].replace("_", " ").title() if entry else ("Cancelled" if self.sheets.is_exception(today, period) else "Upcoming")
+                lines.append(f"Period {period} - {subject}: *{state}*")
+                rows.append([
+                    button(f"Mark {period}", f"mark:{today.isoformat()}:{period}"),
+                    button("No class", f"save:no_class:{today.isoformat()}:{period}")
+                ])
+            text = "\n".join(lines)
+            rows.append([button("Cancel today", "exception:add_day")])
+        rows.append(self._back()[0])
+        await self._show(update, text, InlineKeyboardMarkup(rows))
+
+    async def mark_page(self, update, context, value):
+        date_str, period = value.split(":", 1)
+        target = date.fromisoformat(date_str)
+        raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
+        if not raw:
+            await self._show(update, "Class not found.", InlineKeyboardMarkup(self._back("today")))
+            return
+        context.user_data.update({"selected_date": date_str, "selected_period": period})
+        current = self.sheets.get_attendance_entry(target, period)
+        current_text = f"\nCurrent: {current['status'].title()}" if current else ""
+        await self._show(update, f"*{self.sheets.normalize_subject(raw)}* - Period {period}\n{date_str}{current_text}\n\nWhat happened?", InlineKeyboardMarkup([
+            [button("Present", f"save:present:{date_str}:{period}"), button("Absent", f"save:absent:{date_str}:{period}")],
+            [button("No Class", f"save:no_class:{date_str}:{period}")],
+            [button("Back", "screen:today")]
+        ]))
+
+    async def save_status(self, update, value):
+        status, date_str, period = value.split(":", 2)
+        target = date.fromisoformat(date_str)
+        raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
+        if not raw or not self.sheets.log_attendance(target, target.strftime("%A"), period, raw, status):
+            await self._show(update, "Could not save attendance.", InlineKeyboardMarkup(self._back("today")))
+            return
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler:
+            scheduler.answered_reminders.add(f"{date_str}:{period}")
+        label = {"present": "Attendance saved", "absent": "Absent saved", "no_class": "No class marked"}[status]
+        await self._show(update, f"*{label}*\n\n{self.sheets.normalize_subject(raw)} - Period {period}", InlineKeyboardMarkup([
+            [button("Edit", f"mark:{date_str}:{period}"), button("Today", "screen:today")],
+            [button("Dashboard", "screen:dashboard")], self._back()
+        ]))
+
+    async def remind_later(self, update, value):
+        date_str, period = value.split(":", 1)
+        target = date.fromisoformat(date_str)
+        raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler and raw:
+            await scheduler.handle_remind_later(period, raw, target)
+        await self._show(update, "I will remind you once more shortly.", InlineKeyboardMarkup(self._back("today")))
+
+    async def subjects_page(self, update):
+        await self._show(update, "*Subjects*\n\nChoose a subject.", InlineKeyboardMarkup([
+            [button(subject, f"subject:{subject}") for subject in SUBJECTS[:2]],
+            [button(subject, f"subject:{subject}") for subject in SUBJECTS[2:4]],
+            [button(subject, f"subject:{subject}") for subject in SUBJECTS[4:]], self._back()
+        ]))
+
+    async def subject_page(self, update, subject):
+        stats = self.sheets.get_attendance_stats()["by_subject"].get(subject, {"present": 0, "absent": 0, "no_class": 0, "total": 0})
+        pct = self.sheets.calculate_subject_percentage(stats)
+        margin = self.sheets.can_miss_before_threshold(stats, float(self.sheets.get_setting("threshold", "75") or 75))
+        margin_text = "No recorded classes yet" if margin == -1 else f"Can still miss: {margin}"
+        text = f"*{subject}*\n\nAttendance: *{pct:.1f}%*\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats.get('no_class', 0)}\nClasses held: {stats['present'] + stats['absent']}\n{margin_text}"
+        await self._show(update, text, InlineKeyboardMarkup([
+            [button("History", f"subject_history:{subject}"), button("Edit entries", f"subject_edit:{subject}")],
+            self._back("subjects")
+        ]))
+
+    async def report_page(self, update, period):
+        today = date.today()
+        start = today - (timedelta(days=6) if period == "weekly" else timedelta(days=29) if period == "monthly" else timedelta(days=3650))
+        stats = self.sheets.get_attendance_stats(start, today)
+        pct = self.sheets.calculate_percentage(stats)
+        label = {"weekly": "This week", "monthly": "This month", "overall": "Overall"}[period]
+        await self._show(update, f"*{label}*\n\nAttendance: *{pct:.1f}%*\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats['no_class']}", InlineKeyboardMarkup([[button("Reports", "screen:reports")], self._back()]))
+
+    async def timetable_page(self, update):
         timetable = self.sheets.get_timetable()
-        periods = timetable.get(day_name, {})
-        if not periods:
-            return f"📅 *Today ({day_name}) - {today}*\n\nNo classes scheduled for today.", []
-        text = f"📅 *Today ({day_name}) - {today}*\n\n"
-        keyboard = []
-        for period_num in sorted(periods.keys(), key=lambda x: int(x)):
-            subject = periods[period_num]
-            if self.sheets.is_exception(today, period_num):
-                text += f"⏰ Period {period_num}: {subject} - *Cancelled*\n"
-            else:
-                text += f"⏰ Period {period_num}: {subject}\n"
-                keyboard.append([InlineKeyboardButton(f"Period {period_num}", callback_data=f"mark_period_{period_num}:{today.isoformat()}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
-        return text, keyboard
+        lines = ["*Timetable*"]
+        for day in sorted(timetable):
+            lines.append(f"\n*{day}*")
+            for period in sorted(timetable[day], key=lambda value: int(value)):
+                lines.append(f"{period}. {self.sheets.normalize_subject(timetable[day][period])}")
+        await self._show(update, "\n".join(lines) if len(lines) > 1 else "*Timetable*\n\nNo timetable found.", InlineKeyboardMarkup(self._back("manage")))
+
+    async def exceptions_page(self, update):
+        entries = self.sheets.get_days_with_exceptions()
+        text = "*Exceptions*\n\n" + ("\n".join(entries) if entries else "No active exceptions.")
+        await self._show(update, text, InlineKeyboardMarkup([
+            [button("Add Day Holiday", "exception:add_day"), button("Add Period No Class", "exception:add_period")],
+            [button("Remove Today", "exception:remove_today")], self._back("manage")
+        ]))
+
+    async def exception_action(self, update, value):
+        today = date.today()
+        if value == "add_day":
+            self.sheets.add_exception(today, "day", reason="Holiday")
+            await self._show(update, "Holiday added for today.", InlineKeyboardMarkup(self._back("exceptions")))
+        elif value == "add_period":
+            periods = self.sheets.get_timetable().get(today.strftime("%A"), {})
+            rows = [[button(f"Period {p}", f"exception:add_period:{today.isoformat()}:{p}")] for p in sorted(periods, key=lambda x: int(x))]
+            await self._show(update, "Choose a period for no class:", InlineKeyboardMarkup(rows + [self._back("exceptions")]))
+        elif value.startswith("add_period:"):
+            _, date_str, period = value.split(":")
+            self.sheets.add_exception(date.fromisoformat(date_str), "period", period=period, reason="No class")
+            await self._show(update, "No class marked.", InlineKeyboardMarkup(self._back("exceptions")))
+        elif value == "remove_today":
+            removed = self.sheets.deactivate_exception(today, "day")
+            await self._show(update, "Exception removed." if removed else "No day exception found.", InlineKeyboardMarkup(self._back("exceptions")))
+
+    async def settings_page(self, update):
+        reminders = self.sheets.get_setting("reminders", "enabled")
+        delay = self.sheets.get_setting("reminder_delay", "5")
+        threshold = self.sheets.get_setting("threshold", "75")
+        text = f"*Settings*\n\nReminders: {reminders}\nDelay: {delay} min\nWarning threshold: {threshold}%"
+        await self._show(update, text, InlineKeyboardMarkup([
+            [button("Toggle reminders", "setting:toggle"), button("Change delay", "setting:delay")],
+            [button("Change threshold", "setting:threshold")], self._back("manage")
+        ]))
+
+    async def setting_action(self, update, value):
+        if value == "toggle":
+            current = self.sheets.get_setting("reminders", "enabled").lower()
+            self.sheets.set_setting("reminders", "disabled" if current == "enabled" else "enabled")
+        elif value == "delay":
+            current = self.sheets.get_setting("reminder_delay", "5")
+            self.sheets.set_setting("reminder_delay", "10" if current == "5" else "5")
+        elif value == "threshold":
+            current = self.sheets.get_setting("threshold", "75")
+            self.sheets.set_setting("threshold", "80" if current == "75" else "75")
+        await self.settings_page(update)
