@@ -20,8 +20,10 @@ def tomorrow() -> date:
 def date_context() -> str:
     current = today()
     next_day = tomorrow()
+    current_time = now()
     return (
         f"Timezone: {Config.TIMEZONE}\n"
+        f"Current time: {current_time.strftime('%H:%M')}\n"
         f"Today: {current.isoformat()} ({current.strftime('%A')})\n"
         f"Tomorrow: {next_day.isoformat()} ({next_day.strftime('%A')})"
     )

@@ -11,18 +11,18 @@ from google.genai import types
 
 from bot.config import Config
 from bot.sheets import SheetsManager
-from bot.time_utils import date_context, today as local_today
+from bot.time_utils import date_context, now, today
 
 logger = logging.getLogger(__name__)
 
 
 def _date_from_text(value: str) -> date | None:
     value = value.lower().strip()
-    today = local_today()
+    current_today = today()
     if value == "today":
-        return today
+        return current_today
     if value == "tomorrow":
-        return today + timedelta(days=1)
+        return current_today + timedelta(days=1)
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d/%m/%y"):
         try:
             from datetime import datetime
@@ -155,6 +155,15 @@ class GeminiAssistant:
         if key not in self.clients:
             self.clients[key] = genai.Client(api_key=key)
         return self.clients[key]
+    
+    def _enhance_prompt_with_context(self, prompt: str) -> str:
+        """Enhance prompt with current time, date, and day context."""
+        current_time = now()
+        current_date = today()
+        
+        # Add context prefix
+        context = f"[Current time: {current_time.strftime('%H:%M')}, Date: {current_date.isoformat()}, Day: {current_date.strftime('%A')}] "
+        return context + prompt
 
     def remember_action(self, prompt: str, action: dict):
         """Remember action with variable extraction for flexible pattern matching."""
@@ -202,7 +211,7 @@ class GeminiAssistant:
             types.FunctionDeclaration(name="sheet_read", description="Read a safe summary of a Google Sheet tab.", parameters=types.Schema(type="OBJECT", required=["sheet"], properties={"sheet": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="attendance_trends", description="Analyze attendance trends over time, optionally for a specific subject or time period.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING"), "days": types.Schema(type="INTEGER")})),
             types.FunctionDeclaration(name="attendance_prediction", description="Predict future attendance based on historical patterns.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING")})),
-            types.FunctionDeclaration(name="get_next_period", description="Get the next class period based on current time and day. Returns the subject and time.", parameters=types.Schema(type="OBJECT", properties={"current_time": types.Schema(type="STRING", description="Current time in HH:MM format (e.g., 13:02)")})),
+            types.FunctionDeclaration(name="get_next_period", description="Get the next class period based on current time and day. Returns the subject and time.", parameters=types.Schema(type="OBJECT", properties={})),
             types.FunctionDeclaration(name="get_timetable", description="Get the full timetable or timetable for a specific day.", parameters=types.Schema(type="OBJECT", properties={"day": types.Schema(type="STRING", description="Day of the week (e.g., Monday, Tuesday)")})),
             types.FunctionDeclaration(name="add_day_holidays", description="Mark every date in an inclusive range as a holiday. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["start", "end"], properties={"start": types.Schema(type="STRING"), "end": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="add_period_exception", description="Mark one period on one date as no class. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["date", "period"], properties={"date": types.Schema(type="STRING"), "period": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
@@ -227,7 +236,7 @@ class GeminiAssistant:
             subject = args.get("subject", "").strip().upper()
             days = args.get("days", 30)
             from datetime import timedelta
-            end_date = local_today()
+            end_date = today()
             start_date = end_date - timedelta(days=days)
             stats = self.sheets.get_attendance_stats(start_date, end_date)
             
@@ -262,13 +271,13 @@ class GeminiAssistant:
             return f"Overall prediction: {prediction}\nCurrent rate: {current_rate:.1%}"
         
         if name == "get_next_period":
-            current_time = args.get("current_time", "")
+            current_time = now().strftime("%H:%M")
             timetable = self.sheets.get_timetable()
             if not timetable:
                 return "No timetable available."
             
             from datetime import datetime
-            current_day = local_today().strftime("%A")
+            current_day = now().strftime("%A")
             
             if current_day not in timetable:
                 return f"No classes scheduled for {current_day}."
@@ -278,7 +287,7 @@ class GeminiAssistant:
                 current_hour, current_minute = map(int, current_time.split(":"))
                 current_minutes = current_hour * 60 + current_minute
             except:
-                return "Invalid time format. Please use HH:MM format (e.g., 13:02)."
+                return "Invalid time format."
             
             # Get period times from timetable with start/end times
             day_schedule = timetable[current_day]
@@ -347,7 +356,7 @@ class GeminiAssistant:
                 stats = self.sheets.get_attendance_stats()
                 return f"Overall: {self.sheets.calculate_percentage(stats):.1f}%\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats['no_class']}"
             elif sheet_name == "exceptions":
-                exceptions = self.sheets.get_exceptions_for_date(local_today())
+                exceptions = self.sheets.get_exceptions_for_date(today())
                 if not exceptions:
                     return "No exceptions for today."
                 return f"Exceptions for today: {len(exceptions)}"
@@ -360,15 +369,18 @@ class GeminiAssistant:
         return json.dumps({"error": "This action changes data and must be confirmed."})
 
     async def ask(self, prompt: str, history: list[dict] | None = None, _attempt: int = 0) -> dict:
+        # Enhance prompt with current time context
+        enhanced_prompt = self._enhance_prompt_with_context(prompt)
+        
         # Check for holiday prompts first (simpler matching)
-        direct = self._holiday_action(prompt)
+        direct = self._holiday_action(enhanced_prompt)
         if direct:
-            direct["prompt"] = prompt
+            direct["prompt"] = prompt  # Store original prompt
             action_desc = self._describe_action(direct)
             return {"text": f"I can do this: {action_desc}\n\nPlease confirm to execute.", "pending": direct}
         
         # Check for saved patterns - but don't auto-execute, just suggest
-        pattern_action = self._pattern_action(prompt)
+        pattern_action = self._pattern_action(enhanced_prompt)
         if pattern_action:
             action_desc = self._describe_action(pattern_action)
             return {"text": f"I found a saved pattern: {action_desc}\n\nYou can confirm to execute, or ignore and I'll try a different approach.", "pending": pattern_action}
@@ -382,14 +394,15 @@ class GeminiAssistant:
 
 IMPORTANT INSTRUCTIONS:
 1. Be conversational and helpful - talk like a human assistant, not a robot
-2. When users ask about timetable, use the get_next_period or get_timetable tools
-3. For "next period" questions, ask for current time if not provided, then use get_next_period
-4. For attendance questions, use attendance_summary tool
-5. Never return raw JSON data - always format responses as natural text
-6. Keep responses concise but friendly
-7. If you need to read Google Sheet data, use the available tools
-8. For any write, edit, or delete actions, return the tool call for confirmation
-9. Ask clarifying questions if date, period, or target is ambiguous
+2. Current time, date, and day are automatically included in the prompt context
+3. When users ask about timetable, use the get_next_period or get_timetable tools
+4. For "next period" questions, use the provided current time from context
+5. For attendance questions, use attendance_summary tool
+6. Never return raw JSON data - always format responses as natural text
+7. Keep responses concise but friendly
+8. If you need to read Google Sheet data, use the available tools
+9. For any write, edit, or delete actions, return the tool call for confirmation
+10. Ask clarifying questions if date, period, or target is ambiguous
 
 Example responses:
 - "Your next class is Period 2 - ECO at 10:30"
