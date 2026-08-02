@@ -409,11 +409,14 @@ Never show raw JSON or technical details to the user.""",
             if calls:
                 call = calls[0]
                 args = dict(call.args or {})
-                if call.name in {"add_day_holidays", "add_period_exception", "edit_timetable", "remove_exception", "update_setting", "add_timetable_entry", "delete_timetable_entry"}:
+                # Write operations that require confirmation
+                write_operations = {"add_day_holidays", "add_period_exception", "edit_timetable", "remove_exception", "update_setting", "add_timetable_entry", "delete_timetable_entry"}
+                if call.name in write_operations:
                     action = {"name": call.name, "args": args}
                     action["prompt"] = prompt
                     action_desc = self._describe_action(action)
                     return {"text": f"I can do this in Google Sheets: {action_desc}\n\nPlease confirm to execute.", "pending": action}
+                # Read-only operations - execute directly
                 return {"text": self._read_tool(call.name, args)}
             return {"text": "\n".join(text_parts) or "I could not understand that request. Could you rephrase it?"}
         except Exception:
