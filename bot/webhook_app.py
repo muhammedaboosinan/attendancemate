@@ -37,6 +37,7 @@ scheduler = None
 bot_loop = None
 scheduler_thread = None
 scheduler_loop = None
+initialized = False
 
 def init_bot():
     """Initialize the bot and scheduler."""
@@ -171,8 +172,7 @@ def shutdown_handler(signum, frame):
         # Ensure process exits
         os._exit(0)
 
-@app.before_first_request
-def start_app():
+def _start_app_once():
     """Initialize the bot when the first request arrives (worker-safe)."""
     success = init_bot()
 
@@ -192,3 +192,18 @@ def start_app():
         logger.warning(f"Could not register signal handlers: {e}")
 
     return success
+
+
+@app.before_request
+def ensure_started():
+    """Before handling any request, ensure the bot is initialized once."""
+    global initialized
+    if initialized:
+        return
+    try:
+        _start_app_once()
+        initialized = True
+    except Exception as e:
+        logger.error(f"Failed to start app in before_request: {e}")
+        # Don't raise; allow request to continue (will likely 500)
+        initialized = False
