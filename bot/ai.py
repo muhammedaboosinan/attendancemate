@@ -456,10 +456,12 @@ Never show raw JSON or technical details to the user.""",
         
         # Smart pattern suggestions based on action type
         if name == "add_day_holidays":
-            if args.get("start") == args.get("end"):
-                return f"no class on {args.get('start', 'date')}"
+            start = args.get('start', 'date')
+            end = args.get('end', 'date')
+            if start == end:
+                return f"no class on {start}"
             else:
-                return f"no class from {args.get('start', 'start_date')} to {args.get('end', 'end_date')}"
+                return f"no class from {start} to {end}"
         
         elif name == "add_period_exception":
             date = args.get('date', 'date')
