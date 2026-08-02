@@ -79,6 +79,85 @@ class BotHandlers:
             # Use pattern matcher instead of AI
             action = self.pattern_matcher.match(prompt)
             
+            # Check if user is entering a date for exception
+            if context.user_data.get("awaiting_date"):
+                try:
+                    target_date = self.pattern_matcher._parse_date(prompt)
+                    if target_date:
+                        self.sheets.add_exception(target_date, "day", reason="No class")
+                        await update.message.reply_text(f"✅ Marked {prompt} as no class.")
+                        context.user_data.pop("awaiting_date")
+                        self.sheets.add_conversation_turn(chat_id, "assistant", f"Marked {prompt} as no class")
+                        return
+                except:
+                    pass
+                await update.message.reply_text("Invalid date format. Please use DD-MM-YYYY or YYYY-MM-DD")
+                return
+            
+            if context.user_data.get("awaiting_date_range"):
+                if "to" in prompt.lower() or "-" in prompt:
+                    try:
+                        parts = prompt.replace("to", "-").split("-")
+                        if len(parts) >= 2:
+                            start_date = self.pattern_matcher._parse_date(parts[0].strip())
+                            end_date = self.pattern_matcher._parse_date(parts[1].strip())
+                            if start_date and end_date:
+                                count = 0
+                                current = start_date
+                                while current <= end_date:
+                                    if not self.sheets.is_exception(current):
+                                        self.sheets.add_exception(current, "day", reason="No class")
+                                        count += 1
+                                    current += timedelta(days=1)
+                                await update.message.reply_text(f"✅ Marked {count} days as no class.")
+                                context.user_data.pop("awaiting_date_range")
+                                self.sheets.add_conversation_turn(chat_id, "assistant", f"Marked {count} days as no class")
+                                return
+                    except:
+                        pass
+                await update.message.reply_text("Invalid date range. Please use format: DD-MM-YYYY to DD-MM-YYYY")
+                return
+            
+            # Handle attendance edit toggle
+            if context.user_data.get("awaiting_toggle"):
+                if ":" in prompt:
+                    try:
+                        date_str, period = prompt.split(":")
+                        target_date = self.pattern_matcher._parse_date(date_str)
+                        if target_date:
+                            current = self.sheets.get_attendance_entry(target_date, period)
+                            if current:
+                                new_status = "absent" if current["status"] == "present" else "present"
+                                day_name = target_date.strftime("%A")
+                                raw = self.sheets.get_class_for_period(day_name, period)
+                                if raw and self.sheets.log_attendance(target_date, day_name, period, raw, new_status):
+                                    await update.message.reply_text(f"✅ Changed to {new_status}")
+                                    context.user_data.pop("awaiting_toggle")
+                                    self.sheets.add_conversation_turn(chat_id, "assistant", f"Changed attendance to {new_status}")
+                                    return
+                    except:
+                        pass
+                await update.message.reply_text("Invalid format. Please use DD-MM-YYYY:period")
+                return
+            
+            # Handle attendance delete
+            if context.user_data.get("awaiting_delete"):
+                if ":" in prompt:
+                    try:
+                        date_str, period = prompt.split(":")
+                        target_date = self.pattern_matcher._parse_date(date_str)
+                        if target_date:
+                            day_name = target_date.strftime("%A")
+                            if self.sheets.delete_attendance_entry(target_date, period):
+                                await update.message.reply_text("✅ Entry deleted")
+                                context.user_data.pop("awaiting_delete")
+                                self.sheets.add_conversation_turn(chat_id, "assistant", "Attendance entry deleted")
+                                return
+                    except:
+                        pass
+                await update.message.reply_text("Invalid format. Please use DD-MM-YYYY:period")
+                return
+            
             if action:
                 if action.get("type") == "message":
                     # Direct message response
@@ -159,53 +238,33 @@ The AI learns from your confirmed actions and creates reusable patterns.
         chat_id = update.effective_chat.id
         deleted = self.sheets.clear_conversation_memory(chat_id)
         if deleted:
-            await update.message.reply_text("✅ AI memory cleared successfully.")
+            await update.message.reply_text("✅ Conversation memory cleared successfully.")
         else:
-            await update.message.reply_text("No AI memory to clear.")
+            await update.message.reply_text("No conversation memory to clear.")
 
     async def undo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
-        undo_data = self.ai.get_undo_action(chat_id)
-        if undo_data:
-            try:
-                result = await __import__("asyncio").to_thread(self.ai.execute, undo_data, chat_id)
-                await update.message.reply_text(f"✅ Undo successful: {result}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Undo failed: {str(e)}")
-        else:
-            await update.message.reply_text("No recent action to undo or undo time has expired (5 minutes).")
-
+        await update.message.reply_text("Undo functionality is disabled. Use the edit buttons in the attendance screen to change entries.")
+    
     async def patterns_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show saved prompt patterns to the user."""
-        patterns = self.sheets._get_worksheet("Prompt_Patterns")
-        if not patterns:
-            await update.message.reply_text("No saved patterns found.")
+        """Show available patterns."""
+        patterns_sheet = self.sheets._get_worksheet("Prompts_Actions")
+        if not patterns_sheet:
+            await update.message.reply_text("No custom patterns configured.")
             return
         
-        rows = self.sheets._read_values("Prompt_Patterns", patterns)
+        rows = self.sheets._read_values("Prompts_Actions", patterns_sheet)
         if len(rows) <= 1:
-            await update.message.reply_text("No saved patterns found.")
+            await update.message.reply_text("No custom patterns configured.")
             return
         
-        import json
         pattern_list = []
         for row in rows[1:]:
             if len(row) >= 3 and row[2].lower() == "true":
-                try:
-                    pattern_data = json.loads(row[1])
-                    if isinstance(pattern_data, dict) and "template" in pattern_data:
-                        template = pattern_data["template"]
-                        variables = pattern_data.get("variables", {})
-                        action = pattern_data.get("action", {}).get("name", "unknown")
-                        var_info = f" (vars: {', '.join(variables.keys())})" if variables else ""
-                        pattern_list.append(f"• {template}\n  → {action}{var_info}")
-                    else:
-                        pattern_list.append(f"• {row[0]}")
-                except:
-                    pattern_list.append(f"• {row[0]}")
+                pattern_list.append(f"• {row[0]}")
         
         if pattern_list:
-            response = "Your saved patterns:\n\n" + "\n".join(pattern_list[:10])  # Limit to 10 patterns
+            response = "Available patterns:\n\n" + "\n".join(pattern_list[:10])
             if len(pattern_list) > 10:
                 response += f"\n\n... and {len(pattern_list) - 10} more"
             await update.message.reply_text(response)
@@ -227,8 +286,30 @@ The AI learns from your confirmed actions and creates reusable patterns.
                 await self.mark_page(update, context, data.split(":", 1)[1])
             elif data.startswith("save:"):
                 await self.save_status(update, data.split(":", 1)[1])
+            elif data.startswith("edit:"):
+                await self.edit_attendance_action(update, context, data.split(":", 1)[1])
+            elif data.startswith("timetable:"):
+                await self.timetable_action(update, context, data.split(":", 1)[1])
             elif data.startswith("exception:"):
-                await self.exception_action(update, data.split(":", 1)[1])
+                action = data.split(":", 1)[1]
+                if action == "today":
+                    await self.add_exception_today(update, context)
+                elif action == "tomorrow":
+                    await self.add_exception_tomorrow(update, context)
+                elif action == "date":
+                    await self.add_exception_date(update, context)
+                elif action == "range":
+                    await self.add_exception_range(update, context)
+                elif action == "add_day":
+                    await self.exception_action(update, "add_day")
+                elif action == "add_period":
+                    await self.exception_action(update, "add_period")
+                elif action == "remove_today":
+                    await self.exception_action(update, "remove_today")
+                elif action == "remove_period":
+                    await self.exception_action(update, "remove_period")
+                else:
+                    await self.exception_action(update, action)
             elif data.startswith("report:"):
                 await self.report_page(update, data.split(":", 1)[1])
             elif data.startswith("setting:"):
@@ -336,6 +417,10 @@ The AI learns from your confirmed actions and creates reusable patterns.
             await self.dashboard_page(update)
         elif screen == "today":
             await self.today_page(update)
+        elif screen == "edit_attendance":
+            await self.edit_attendance_page(update)
+        elif screen == "edit_timetable":
+            await self.edit_timetable_page(update)
         elif screen == "subjects":
             await self.subjects_page(update)
         elif screen == "reports":
@@ -377,8 +462,46 @@ The AI learns from your confirmed actions and creates reusable patterns.
         lines.append(f"\nUpdated: {now().strftime('%Y-%m-%d %H:%M')}")
         await self._show(update, "\n".join(lines), InlineKeyboardMarkup([
             [button("Refresh", "screen:dashboard"), button("Subjects", "screen:subjects")],
-            [button("Today", "screen:today")], self._back()
+            [button("Today", "screen:today"), button("Edit Attendance", "screen:edit_attendance")],
+            self._back()
         ]))
+    
+    async def edit_attendance_page(self, update):
+        """Page for editing attendance entries."""
+        await self._show(update, "*Edit Attendance*\n\nChoose an option:", InlineKeyboardMarkup([
+            [button("Toggle Present/Absent", "edit:toggle"), button("Delete Entry", "edit:delete")],
+            [button("Edit Timetable", "screen:edit_timetable")],
+            self._back("dashboard")
+        ]))
+    
+    async def edit_attendance_action(self, update, context, action):
+        """Handle attendance edit actions."""
+        if action == "toggle":
+            await self._show(update, "Please enter the date and period to toggle (format: DD-MM-YYYY:period)\nExample: 02-08-2026:1", InlineKeyboardMarkup([self._back("edit_attendance")]))
+            context.user_data["awaiting_toggle"] = True
+        elif action == "delete":
+            await self._show(update, "Please enter the date and period to delete (format: DD-MM-YYYY:period)\nExample: 02-08-2026:1", InlineKeyboardMarkup([self._back("edit_attendance")]))
+            context.user_data["awaiting_delete"] = True
+    
+    async def edit_timetable_page(self, update):
+        """Page for editing timetable."""
+        await self._show(update, "*Edit Timetable*\n\nChoose an option:", InlineKeyboardMarkup([
+            [button("Edit Subject", "timetable:edit_subject"), button("Edit Time", "timetable:edit_time")],
+            [button("Edit Period", "timetable:edit_period")],
+            self._back("edit_attendance")
+        ]))
+    
+    async def timetable_action(self, update, context, action):
+        """Handle timetable edit actions."""
+        if action == "edit_subject":
+            await self._show(update, "Please enter: day, period, new subject\nFormat: Monday:1:ECO", InlineKeyboardMarkup([self._back("edit_timetable")]))
+            context.user_data["awaiting_subject_edit"] = True
+        elif action == "edit_time":
+            await self._show(update, "Please enter: period, start time, end time\nFormat: 1:09:30:10:30", InlineKeyboardMarkup([self._back("edit_timetable")]))
+            context.user_data["awaiting_time_edit"] = True
+        elif action == "edit_period":
+            await self._show(update, "Please enter: day, old period, new period\nFormat: Monday:1:2", InlineKeyboardMarkup([self._back("edit_timetable")]))
+            context.user_data["awaiting_period_edit"] = True
 
     async def today_page(self, update):
         today = local_today()
@@ -504,10 +627,31 @@ The AI learns from your confirmed actions and creates reusable patterns.
         entries = self.sheets.get_days_with_exceptions()
         text = "*Exceptions*\n\n" + ("\n".join(entries) if entries else "No active exceptions.")
         await self._show(update, text, InlineKeyboardMarkup([
-            [button("Add Day Holiday", "exception:add_day"), button("Add Period No Class", "exception:add_period")],
+            [button("Today", "exception:today"), button("Tomorrow", "exception:tomorrow")],
+            [button("Specific Date", "exception:date"), button("Date Range", "exception:range")],
+            [button("Add Period No Class", "exception:add_period")],
             [button("Remove Today", "exception:remove_today"), button("Remove Period", "exception:remove_period")],
             self._back("manage")
         ]))
+    
+    async def add_exception_today(self, update, context):
+        today = local_today()
+        self.sheets.add_exception(today, "day", reason="No class")
+        await self._show(update, "✅ Marked today as no class.", InlineKeyboardMarkup([self._back("exceptions")]))
+    
+    async def add_exception_tomorrow(self, update, context):
+        from datetime import timedelta
+        tomorrow = local_today() + timedelta(days=1)
+        self.sheets.add_exception(tomorrow, "day", reason="No class")
+        await self._show(update, "✅ Marked tomorrow as no class.", InlineKeyboardMarkup([self._back("exceptions")]))
+    
+    async def add_exception_date(self, update, context):
+        await self._show(update, "Please enter the date in format DD-MM-YYYY or YYYY-MM-DD", InlineKeyboardMarkup([self._back("exceptions")]))
+        context.user_data["awaiting_date"] = True
+    
+    async def add_exception_range(self, update, context):
+        await self._show(update, "Please enter the date range in format: DD-MM-YYYY to DD-MM-YYYY", InlineKeyboardMarkup([self._back("exceptions")]))
+        context.user_data["awaiting_date_range"] = True
 
     async def exception_action(self, update, value):
         today = local_today()

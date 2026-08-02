@@ -435,6 +435,27 @@ class SheetsManager:
         ])
         self.clear_cache()
         return True
+    
+    def delete_attendance_entry(self, target_date: date, period: str) -> bool:
+        """Delete an attendance entry for a specific date and period."""
+        try:
+            worksheet = self._get_worksheet("Attendance_Log")
+            if not worksheet:
+                return False
+            
+            rows = self._read_values("Attendance_Log", worksheet)
+            date_str = target_date.isoformat()
+            
+            for i, row in enumerate(rows[1:], start=2):  # Skip header, start from row 2
+                if len(row) >= 4 and row[0] == date_str and row[2] == period:
+                    worksheet.delete_rows(i)
+                    self.clear_cache()
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.error(f"Failed to delete attendance entry: {e}")
+            return False
 
     def get_attendance_entry(self, check_date: date, period: str) -> Optional[dict]:
         """Return the latest log entry for a date and period."""
