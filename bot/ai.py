@@ -164,6 +164,13 @@ class GeminiAssistant:
         # Add context prefix
         context = f"[Current time: {current_time.strftime('%H:%M')}, Date: {current_date.isoformat()}, Day: {current_date.strftime('%A')}] "
         return context + prompt
+    
+    def _strip_context_from_prompt(self, prompt: str) -> str:
+        """Remove the context prefix from prompt for pattern saving."""
+        # Remove the context prefix that was added
+        import re
+        pattern = r"\[Current time: [^\]]+\] "
+        return re.sub(pattern, "", prompt).strip()
 
     def remember_action(self, prompt: str, action: dict):
         """Remember action with variable extraction for flexible pattern matching."""
@@ -212,7 +219,8 @@ class GeminiAssistant:
             types.FunctionDeclaration(name="attendance_trends", description="Analyze attendance trends over time, optionally for a specific subject or time period.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING"), "days": types.Schema(type="INTEGER")})),
             types.FunctionDeclaration(name="attendance_prediction", description="Predict future attendance based on historical patterns.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="get_next_period", description="Get the next class period based on current time and day. Returns the subject and time.", parameters=types.Schema(type="OBJECT", properties={})),
-            types.FunctionDeclaration(name="get_timetable", description="Get the full timetable or timetable for a specific day.", parameters=types.Schema(type="OBJECT", properties={"day": types.Schema(type="STRING", description="Day of the week (e.g., Monday, Tuesday)")})),
+            types.FunctionDeclaration(name="get_class_start_times", description="Get the start times for the first class each day. Shows day, time, and subject.", parameters=types.Schema(type="OBJECT", properties={})),
+            types.FunctionDeclaration(name="get_timetable", description="Get the full timetable with class times and subjects, or timetable for a specific day. Always shows both time and subject.", parameters=types.Schema(type="OBJECT", properties={"day": types.Schema(type="STRING", description="Day of the week (e.g., Monday, Tuesday). If not provided, shows full timetable with times.")})),
             types.FunctionDeclaration(name="add_day_holidays", description="Mark every date in an inclusive range as a holiday. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["start", "end"], properties={"start": types.Schema(type="STRING"), "end": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="add_period_exception", description="Mark one period on one date as no class. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["date", "period"], properties={"date": types.Schema(type="STRING"), "period": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="edit_timetable", description="Change a timetable subject or time. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["day", "period"], properties={"day": types.Schema(type="STRING"), "period": types.Schema(type="STRING"), "subject": types.Schema(type="STRING"), "start": types.Schema(type="STRING"), "end": types.Schema(type="STRING")})),
@@ -308,9 +316,31 @@ class GeminiAssistant:
             
             return "No more classes scheduled for today."
         
+        if name == "get_class_start_times":
+            timetable = self.sheets.get_timetable()
+            period_times = self.sheets.get_all_period_times()
+            
+            if not timetable:
+                return "No timetable available."
+            
+            response = "📅 First class start times:\n\n"
+            for day in sorted(timetable.keys()):
+                day_schedule = timetable[day]
+                # Find the first period (period 1)
+                if "1" in day_schedule:
+                    subject = day_schedule["1"]
+                    times = period_times.get("1")
+                    if times:
+                        response += f"📅 {day}: {times[0]} - {subject}\n"
+                    else:
+                        response += f"📅 {day}: {subject}\n"
+            
+            return response.strip()
+        
         if name == "get_timetable":
             day = args.get("day", "").capitalize()
             timetable = self.sheets.get_timetable()
+            period_times = self.sheets.get_all_period_times()
             
             if not timetable:
                 return "No timetable available."
@@ -318,22 +348,30 @@ class GeminiAssistant:
             if day:
                 if day in timetable:
                     day_schedule = timetable[day]
-                    response = f"Timetable for {day}:\n"
+                    response = f"📅 {day} Schedule:\n\n"
                     for period_num in sorted(day_schedule.keys(), key=int):
                         subject = day_schedule[period_num]
-                        response += f"Period {period_num}: {subject}\n"
+                        times = period_times.get(period_num)
+                        if times:
+                            response += f"⏰ Period {period_num}: {times[0]} - {times[1]} → {subject}\n"
+                        else:
+                            response += f"📚 Period {period_num}: {subject}\n"
                     return response.strip()
                 else:
                     return f"No timetable found for {day}. Available days: {', '.join(timetable.keys())}"
             else:
-                # Return full timetable summary
-                response = "Full timetable:\n\n"
+                # Return full timetable with times
+                response = "📚 Full Weekly Schedule:\n\n"
                 for day in sorted(timetable.keys()):
                     day_schedule = timetable[day]
-                    response += f"{day}:\n"
+                    response += f"📅 {day}:\n"
                     for period_num in sorted(day_schedule.keys(), key=int):
                         subject = day_schedule[period_num]
-                        response += f"  Period {period_num}: {subject}\n"
+                        times = period_times.get(period_num)
+                        if times:
+                            response += f"  ⏰ Period {period_num}: {times[0]} - {times[1]} → {subject}\n"
+                        else:
+                            response += f"  📚 Period {period_num}: {subject}\n"
                     response += "\n"
                 return response.strip()
         
@@ -390,28 +428,45 @@ class GeminiAssistant:
             return {"text": "AI suggestions are not configured yet. Add Gemini keys to ai.env."}
         try:
             config = types.GenerateContentConfig(
-                system_instruction=f"""You are Attendance Mate, a friendly and helpful attendance assistant. {date_context()} 
+                system_instruction=f"""You are Attendance Mate, a friendly and intelligent attendance assistant. {date_context()} 
 
-IMPORTANT INSTRUCTIONS:
-1. Be conversational and helpful - talk like a human assistant, not a robot
-2. Current time, date, and day are automatically included in the prompt context
-3. When users ask about timetable, use the get_next_period or get_timetable tools
-4. For "next period" questions, use the provided current time from context
-5. For attendance questions, use attendance_summary tool
-6. Never return raw JSON data - always format responses as natural text
-7. Keep responses concise but friendly
-8. If you need to read Google Sheet data, use the available tools
-9. For any write, edit, or delete actions, return the tool call for confirmation
-10. Ask clarifying questions if date, period, or target is ambiguous
+CRITICAL BEHAVIOR RULES:
+1. NEVER apologize - be confident and direct
+2. Use natural, conversational language - never sound robotic
+3. Always provide complete information (time + subject for classes)
+4. Current time, date, and day are automatically included in every prompt
+5. Answer directly without unnecessary explanations
+6. Use emojis sparingly to appear natural but professional
+7. When asked about "when classes start", use get_class_start_times tool
+8. When asked about "next period", use get_next_period tool
+9. When asked about "timetable", use get_timetable tool
+10. Never say "I don't have a way" - use available tools to provide best possible answer
+11. If user seems frustrated, acknowledge briefly and provide direct answer
+12. Keep responses concise but complete
 
-Example responses:
-- "Your next class is Period 2 - ECO at 10:30"
-- "You have MDC next at 11:30"
-- "Your overall attendance is 85.5%"
+CONVERSATION EXAMPLES:
+- User: "When do classes start everyday?"
+  AI: "Here's when your classes start each day:\n📅 Monday: 09:30 - MINOR 1\n📅 Tuesday: 09:30 - ECO (BKU)\n📅 Wednesday: 09:30 - MINOR 2..."
 
-Never show raw JSON or technical details to the user.""",
+- User: "What's the next period?"
+  AI: "Your next class is Period 2 - ECO at 10:30"
+
+- User: "Show me my timetable"
+  AI: "📚 Your weekly schedule:\n📅 Monday:\n  ⏰ Period 1: 09:30 - 10:30 → MINOR 1\n  ⏰ Period 2: 10:30 - 11:30 → ECO (VNV)..."
+
+AVAILABLE TOOLS:
+- get_next_period: Find next class with time
+- get_timetable: Show schedule with times and subjects
+- attendance_summary: Check attendance statistics
+- sheet_read: Read sheet data
+
+IMPORTANT: Always use the right tool:
+- "when classes start" → get_class_start_times
+- "next period" → get_next_period  
+- "timetable" → get_timetable
+- "attendance" → attendance_summary""",
                 tools=[types.Tool(function_declarations=self._declaration())],
-                temperature=0.7,
+                temperature=0.8,
             )
             context = ""
             if history:

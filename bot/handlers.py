@@ -232,6 +232,11 @@ The AI learns from your confirmed actions and creates reusable patterns.
             await update.callback_query.edit_message_text("That request has expired. Please ask again.")
             return
         
+        # Strip context from prompt before saving
+        original_prompt = action.get("prompt", "")
+        clean_prompt = self.ai._strip_context_from_prompt(original_prompt)
+        action["prompt"] = clean_prompt
+        
         # Execute the action first
         chat_id = update.effective_chat.id if update.effective_chat else None
         result = await __import__("asyncio").to_thread(self.ai.execute, action, chat_id)
@@ -241,9 +246,8 @@ The AI learns from your confirmed actions and creates reusable patterns.
         context.user_data["last_ai_result"] = result
         
         # Ask if user wants to save pattern
-        original_prompt = action.get("prompt", "")
-        if original_prompt:
-            suggested_prompt = self.ai.suggest_pattern_refinement(original_prompt, action)
+        if clean_prompt:
+            suggested_prompt = self.ai.suggest_pattern_refinement(clean_prompt, action)
             action_desc = self.ai._describe_action(action)
             
             keyboard = InlineKeyboardMarkup([
