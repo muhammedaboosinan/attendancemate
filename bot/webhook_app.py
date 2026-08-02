@@ -8,6 +8,7 @@ import threading
 import asyncio
 import atexit
 import signal
+import sys
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -163,23 +164,31 @@ def shutdown_handler(signum, frame):
     """Handle shutdown signals gracefully."""
     logger.info(f"Received signal {signum}, shutting down...")
     cleanup_scheduler()
-    # Exit with success
-    os._exit(0)
+    # Exit gracefully
+    try:
+        sys.exit(0)
+    except SystemExit:
+        # Ensure process exits
+        os._exit(0)
 
-# Initialize bot on module import
-init_bot()
+@app.before_first_request
+def start_app():
+    """Initialize the bot when the first request arrives (worker-safe)."""
+    success = init_bot()
 
-# Register cleanup function
-try:
-    atexit.register(cleanup_scheduler)
-    logger.info("Cleanup function registered")
-except Exception as e:
-    logger.warning(f"Could not register cleanup function: {e}")
+    # Register cleanup function in worker process
+    try:
+        atexit.register(cleanup_scheduler)
+        logger.info("Cleanup function registered")
+    except Exception as e:
+        logger.warning(f"Could not register cleanup function: {e}")
 
-# Register signal handlers for graceful shutdown
-try:
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
-    logger.info("Signal handlers registered")
-except Exception as e:
-    logger.warning(f"Could not register signal handlers: {e}")
+    # Register signal handlers for graceful shutdown in this process
+    try:
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        signal.signal(signal.SIGINT, shutdown_handler)
+        logger.info("Signal handlers registered")
+    except Exception as e:
+        logger.warning(f"Could not register signal handlers: {e}")
+
+    return success
