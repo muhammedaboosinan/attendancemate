@@ -107,7 +107,10 @@ def cleanup_scheduler():
     global scheduler
     if scheduler:
         logger.info("Cleaning up scheduler...")
-        scheduler.stop_sync()
+        try:
+            scheduler.stop_sync()
+        except Exception as e:
+            logger.warning(f"Error during scheduler cleanup: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -144,8 +147,11 @@ def index():
     """Root endpoint."""
     return {"status": "Telegram Attendance Bot is running", "mode": "webhook"}, 200
 
-# Register cleanup function
-atexit.register(cleanup_scheduler)
-
 # Initialize bot on module import
 init_bot()
+
+# Register cleanup function with error handling after initialization
+try:
+    atexit.register(cleanup_scheduler)
+except Exception as e:
+    logger.warning(f"Could not register cleanup function: {e}")

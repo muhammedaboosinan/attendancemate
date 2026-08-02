@@ -54,14 +54,20 @@ class ReminderScheduler:
         import asyncio
         if self._tasks:
             for task in self._tasks:
-                task.cancel()
-            # Create new event loop for cleanup
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+                try:
+                    task.cancel()
+                except Exception:
+                    pass  # Ignore errors during shutdown
+            # Try to clean up tasks, but don't fail if event loop is closed
             try:
-                loop.run_until_complete(asyncio.gather(*self._tasks, return_exceptions=True))
-            finally:
-                loop.close()
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(asyncio.gather(*self._tasks, return_exceptions=True))
+                finally:
+                    loop.close()
+            except Exception:
+                pass  # Event loop might be closed during shutdown
         self._tasks.clear()
         self.running = False
         logger.info("Reminder scheduler stopped (sync)")
