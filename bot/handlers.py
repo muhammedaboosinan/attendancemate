@@ -44,7 +44,14 @@ class BotHandlers:
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
-        await self._show(update, "*Attendance Mate*\n\nTrack your classes in a few taps.", menu_keyboard())
+        try:
+            await self._show(update, "*Attendance Mate*\n\nTrack your classes in a few taps.", menu_keyboard())
+        except Exception as e:
+            logger.error(f"Error in start_command: {e}")
+            try:
+                await update.message.reply_text("Welcome to Attendance Mate! Having trouble loading the menu. Please try again.")
+            except:
+                pass  # If even this fails, at least we tried
 
     async def main_menu_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         destinations = {
@@ -63,7 +70,11 @@ class BotHandlers:
         else:
             prompt = update.message.text or ""
             chat_id = update.effective_chat.id
-            previous_turns = self.sheets.get_recent_conversation(chat_id)
+            try:
+                previous_turns = self.sheets.get_recent_conversation(chat_id)
+            except Exception as e:
+                logger.warning(f"Failed to get conversation history: {e}")
+                previous_turns = []  # Continue without history if it fails
             if self._asks_for_last_prompt(prompt):
                 last_prompt = next((turn["text"] for turn in reversed(previous_turns) if turn["role"] == "user"), None)
                 response_text = f"Your last prompt was:\n\n{last_prompt}" if last_prompt else "I do not have an earlier prompt saved yet."
@@ -72,15 +83,31 @@ class BotHandlers:
                 await update.message.reply_text(response_text)
                 return
             self.sheets.add_conversation_turn(chat_id, "user", prompt)
-            result = await self.ai.ask(prompt, previous_turns)
+            try:
+                result = await self.ai.ask(prompt, previous_turns)
+            except Exception as e:
+                logger.error(f"AI request failed: {e}")
+                await update.message.reply_text("I'm having trouble processing your request right now. Please try again.")
+                return
             if result.get("pending"):
                 context.user_data["pending_ai_action"] = result["pending"]
                 response_text = f"{result['text']}\n\n{self._action_summary(result['pending'])}"
-                await update.message.reply_text(response_text, reply_markup=InlineKeyboardMarkup([[button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]]))
+                try:
+                    await update.message.reply_text(response_text, reply_markup=InlineKeyboardMarkup([[button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]]))
+                except Exception as e:
+                    logger.error(f"Failed to send response: {e}")
+                    await update.message.reply_text("I found an action to perform. Please type 'confirm' to proceed.")
             else:
                 response_text = result["text"]
-                await update.message.reply_text(response_text)
-            self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
+                try:
+                    await update.message.reply_text(response_text)
+                except Exception as e:
+                    logger.error(f"Failed to send response: {e}")
+                    await update.message.reply_text("Response ready but couldn't send properly.")
+            try:
+                self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
+            except Exception as e:
+                logger.warning(f"Failed to save conversation turn: {e}")
 
     @staticmethod
     def _asks_for_last_prompt(prompt: str) -> bool:

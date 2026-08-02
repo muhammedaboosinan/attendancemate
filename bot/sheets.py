@@ -38,9 +38,20 @@ class SheetsManager:
         cached = self._values_cache.get(sheet_name)
         if cached and now - cached[0] < self._cache_ttl_seconds:
             return cached[1]
-        values = worksheet.get_all_values()
-        self._values_cache[sheet_name] = (now, values)
-        return values
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                values = worksheet.get_all_values()
+                self._values_cache[sheet_name] = (now, values)
+                return values
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retrying {sheet_name} read (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(1)  # Wait before retry
+                else:
+                    logger.error(f"Failed to read {sheet_name} after {max_retries} attempts: {e}")
+                    return []  # Return empty list on failure
     
     def _connect(self):
         """Initialize connection to Google Sheets."""
