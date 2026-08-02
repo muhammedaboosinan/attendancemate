@@ -330,9 +330,33 @@ class GeminiAssistant:
                 return response.strip()
         
         if name == "sheet_read":
-            allowed = {"timetable": self.sheets.get_timetable, "attendance_log": lambda: self.sheets.get_attendance_stats(), "exceptions": lambda: self.sheets.get_exceptions_for_date(local_today()), "settings": lambda: {key: self.sheets.get_setting(key) for key in ("threshold", "reminders", "reminder_delay")}}
-            reader = allowed.get(args.get("sheet", "").lower())
-            return json.dumps(reader() if reader else {"error": "Sheet is not available through this assistant."}, default=str)
+            sheet_name = args.get("sheet", "").lower()
+            if sheet_name == "timetable":
+                timetable = self.sheets.get_timetable()
+                if not timetable:
+                    return "No timetable available."
+                response = "Timetable:\n\n"
+                for day in sorted(timetable.keys()):
+                    day_schedule = timetable[day]
+                    response += f"{day}:\n"
+                    for period_num in sorted(day_schedule.keys(), key=int):
+                        subject = day_schedule[period_num]
+                        response += f"  Period {period_num}: {subject}\n"
+                    response += "\n"
+                return response.strip()
+            elif sheet_name == "attendance_log":
+                stats = self.sheets.get_attendance_stats()
+                return f"Overall: {self.sheets.calculate_percentage(stats):.1f}%\nPresent: {stats['present']}\nAbsent: {stats['absent']}\nNo class: {stats['no_class']}"
+            elif sheet_name == "exceptions":
+                exceptions = self.sheets.get_exceptions_for_date(local_today())
+                if not exceptions:
+                    return "No exceptions for today."
+                return f"Exceptions for today: {len(exceptions)}"
+            elif sheet_name == "settings":
+                settings = {key: self.sheets.get_setting(key) for key in ("threshold", "reminders", "reminder_delay")}
+                return f"Settings: {settings}"
+            else:
+                return f"Sheet '{sheet_name}' is not available through this assistant."
         
         return json.dumps({"error": "This action changes data and must be confirmed."})
 
