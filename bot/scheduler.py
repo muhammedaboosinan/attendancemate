@@ -27,10 +27,12 @@ class ReminderScheduler:
         self.queued_retries = set()
         self.retry_queue = asyncio.Queue()
         self._tasks = []
+        self._loop = None
     
     async def start(self):
         """Start the scheduler."""
         self.running = True
+        self._loop = asyncio.get_running_loop()
         logger.info("Reminder scheduler started")
         
         # Start the check loop
@@ -40,27 +42,71 @@ class ReminderScheduler:
         ]
         
     async def stop(self):
-        """Stop the scheduler."""
+        """Stop the scheduler gracefully."""
         self.running = False
+        logger.info("Stopping reminder scheduler...")
+        
+        # Cancel all pending tasks
         for task in self._tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to finish with a timeout
         if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._tasks, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for scheduler tasks to stop")
+            except Exception as e:
+                logger.warning(f"Error while stopping scheduler tasks: {e}")
+        
         self._tasks.clear()
         logger.info("Reminder scheduler stopped")
     
     def stop_sync(self):
         """Synchronous stop method for non-async contexts."""
-        # Just mark as stopped without using event loops
-        if self._tasks:
-            for task in self._tasks:
+        self.running = False
+        logger.info("Stopping reminder scheduler (sync)...")
+        
+        # Cancel tasks without awaiting (best effort for shutdown)
+        for task in self._tasks:
+            if not task.done():
                 try:
                     task.cancel()
                 except Exception:
                     pass  # Ignore errors during shutdown
+        
+        # Give the event loop a chance to process cancellations
+        if self._loop and self._loop.is_running():
+            try:
+                # Schedule the stop coroutine on the loop
+                future = asyncio.run_coroutine_threadsafe(self._stop_async(), self._loop)
+                future.result(timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Error during sync stop: {e}")
+        
         self._tasks.clear()
-        self.running = False
         logger.info("Reminder scheduler stopped (sync)")
+    
+    async def _stop_async(self):
+        """Internal async stop helper for sync stop."""
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._tasks, return_exceptions=True),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for scheduler tasks to stop")
+            except Exception:
+                pass
+        self._tasks.clear()
     
     async def _check_loop(self):
         """Main loop that checks for period endings."""
@@ -68,6 +114,9 @@ class ReminderScheduler:
             try:
                 await self._check_periods()
                 await asyncio.sleep(60 * Config.CHECK_INTERVAL_MINUTES)
+            except asyncio.CancelledError:
+                logger.info("Check loop cancelled")
+                break
             except Exception as e:
                 logger.error(f"Error in check loop: {e}")
                 await asyncio.sleep(5)
@@ -86,6 +135,9 @@ class ReminderScheduler:
                     )
                 else:
                     await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                logger.info("Retry loop cancelled")
+                break
             except Exception as e:
                 logger.error(f"Error in retry loop: {e}")
                 await asyncio.sleep(10)

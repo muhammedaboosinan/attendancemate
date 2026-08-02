@@ -7,6 +7,7 @@ import logging
 import threading
 import asyncio
 import atexit
+import signal
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -33,10 +34,12 @@ app = Flask(__name__)
 application = None
 scheduler = None
 bot_loop = None
+scheduler_thread = None
+scheduler_loop = None
 
 def init_bot():
     """Initialize the bot and scheduler."""
-    global application, scheduler, bot_loop
+    global application, scheduler, bot_loop, scheduler_thread, scheduler_loop
     
     try:
         Config.validate()
@@ -80,14 +83,30 @@ def init_bot():
             
             # Start scheduler in background thread
             def run_scheduler():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                global scheduler_loop
+                scheduler_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(scheduler_loop)
                 try:
-                    loop.run_until_complete(scheduler.start())
+                    scheduler_loop.run_until_complete(scheduler.start())
+                    scheduler_loop.run_forever()
+                except asyncio.CancelledError:
+                    logger.info("Scheduler loop cancelled")
                 except Exception as e:
                     logger.error(f"Scheduler error: {e}")
                 finally:
-                    loop.close()
+                    # Cancel any remaining tasks
+                    try:
+                        pending = asyncio.all_tasks(scheduler_loop)
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            scheduler_loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                    except Exception:
+                        pass
+                    scheduler_loop.close()
+                    logger.info("Scheduler event loop closed")
             
             scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
             scheduler_thread.start()
@@ -104,47 +123,48 @@ def init_bot():
 
 def cleanup_scheduler():
     """Clean up scheduler on shutdown."""
-    global scheduler
+    global scheduler, scheduler_loop, scheduler_thread
     if scheduler:
         try:
+            logger.info("Cleaning up scheduler...")
             scheduler.running = False
-        except Exception:
-            pass  # Ignore any errors during shutdown
+            
+            # Stop the scheduler loop gracefully
+            if scheduler_loop and scheduler_loop.is_running():
+                try:
+                    # Schedule stop on the scheduler's event loop
+                    future = asyncio.run_coroutine_threadsafe(
+                        scheduler.stop(), scheduler_loop
+                    )
+                    future.result(timeout=5.0)
+                except Exception as e:
+                    logger.warning(f"Error stopping scheduler: {e}")
+                
+                # Stop the event loop
+                try:
+                    scheduler_loop.call_soon_threadsafe(scheduler_loop.stop)
+                except Exception as e:
+                    logger.warning(f"Error stopping scheduler loop: {e}")
+            
+            # Wait for the thread to finish
+            if scheduler_thread and scheduler_thread.is_alive():
+                scheduler_thread.join(timeout=5.0)
+                if scheduler_thread.is_alive():
+                    logger.warning("Scheduler thread did not stop within timeout")
+            
+            scheduler = None
+            scheduler_loop = None
+            scheduler_thread = None
+            logger.info("Scheduler cleanup complete")
+        except Exception as e:
+            logger.warning(f"Error during scheduler cleanup: {e}")
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle incoming webhook updates from Telegram."""
-    if application is None:
-        return {"error": "Bot not initialized"}, 500
-    
-    try:
-        # Get update from request
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        
-        # Process update in bot's event loop
-        if bot_loop:
-            bot_loop.run_until_complete(application.process_update(update))
-        else:
-            # Fallback: create temporary event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.process_update(update))
-            loop.close()
-        
-        return {"status": "ok"}, 200
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}", exc_info=True)
-        return {"error": str(e)}, 500
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint for Render."""
-    return {"status": "healthy", "bot_initialized": application is not None}, 200
-
-@app.route('/')
-def index():
-    """Root endpoint."""
-    return {"status": "Telegram Attendance Bot is running", "mode": "webhook"}, 200
+def shutdown_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    logger.info(f"Received signal {signum}, shutting down...")
+    cleanup_scheduler()
+    # Exit with success
+    os._exit(0)
 
 # Initialize bot on module import
 init_bot()
@@ -155,3 +175,11 @@ try:
     logger.info("Cleanup function registered")
 except Exception as e:
     logger.warning(f"Could not register cleanup function: {e}")
+
+# Register signal handlers for graceful shutdown
+try:
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    logger.info("Signal handlers registered")
+except Exception as e:
+    logger.warning(f"Could not register signal handlers: {e}")
