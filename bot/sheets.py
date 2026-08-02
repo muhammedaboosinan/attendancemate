@@ -272,6 +272,23 @@ class SheetsManager:
                 return row[3].strip(), row[4].strip()
         return None
     
+    def get_all_period_times(self) -> dict:
+        """Return all period times from timetable as a dictionary."""
+        timetable = self._get_worksheet("Timetable")
+        if not timetable:
+            return {}
+        
+        period_times = {}
+        for row in self._read_values("Timetable", timetable)[1:]:
+            if len(row) >= 5:
+                period = row[1]
+                start_time = row[3].strip() if len(row) > 3 else ""
+                end_time = row[4].strip() if len(row) > 4 else ""
+                if start_time and end_time:
+                    period_times[period] = (start_time, end_time)
+        
+        return period_times
+    
     def is_exception(self, check_date: date, period: Optional[str] = None) -> bool:
         """Check if a date or date+period is marked as an exception."""
         exceptions = self._get_worksheet("Exceptions")

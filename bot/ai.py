@@ -203,6 +203,8 @@ class GeminiAssistant:
             types.FunctionDeclaration(name="sheet_read", description="Read a safe summary of a Google Sheet tab.", parameters=types.Schema(type="OBJECT", required=["sheet"], properties={"sheet": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="attendance_trends", description="Analyze attendance trends over time, optionally for a specific subject or time period.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING"), "days": types.Schema(type="INTEGER")})),
             types.FunctionDeclaration(name="attendance_prediction", description="Predict future attendance based on historical patterns.", parameters=types.Schema(type="OBJECT", properties={"subject": types.Schema(type="STRING")})),
+            types.FunctionDeclaration(name="get_next_period", description="Get the next class period based on current time and day. Returns the subject and time.", parameters=types.Schema(type="OBJECT", properties={"current_time": types.Schema(type="STRING", description="Current time in HH:MM format (e.g., 13:02)")})),
+            types.FunctionDeclaration(name="get_timetable", description="Get the full timetable or timetable for a specific day.", parameters=types.Schema(type="OBJECT", properties={"day": types.Schema(type="STRING", description="Day of the week (e.g., Monday, Tuesday)")})),
             types.FunctionDeclaration(name="add_day_holidays", description="Mark every date in an inclusive range as a holiday. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["start", "end"], properties={"start": types.Schema(type="STRING"), "end": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="add_period_exception", description="Mark one period on one date as no class. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["date", "period"], properties={"date": types.Schema(type="STRING"), "period": types.Schema(type="STRING"), "reason": types.Schema(type="STRING")})),
             types.FunctionDeclaration(name="edit_timetable", description="Change a timetable subject or time. Requires confirmation.", parameters=types.Schema(type="OBJECT", required=["day", "period"], properties={"day": types.Schema(type="STRING"), "period": types.Schema(type="STRING"), "subject": types.Schema(type="STRING"), "start": types.Schema(type="STRING"), "end": types.Schema(type="STRING")})),
@@ -260,6 +262,73 @@ class GeminiAssistant:
             prediction = "Likely to maintain good attendance" if current_rate > 0.8 else "May need attention" if current_rate > 0.6 else "At risk of low attendance"
             return f"Overall prediction: {prediction}\nCurrent rate: {current_rate:.1%}"
         
+        if name == "get_next_period":
+            current_time = args.get("current_time", "")
+            timetable = self.sheets.get_timetable()
+            if not timetable:
+                return "No timetable available."
+            
+            from datetime import datetime
+            current_day = local_today().strftime("%A")
+            
+            if current_day not in timetable:
+                return f"No classes scheduled for {current_day}."
+            
+            # Parse current time
+            try:
+                current_hour, current_minute = map(int, current_time.split(":"))
+                current_minutes = current_hour * 60 + current_minute
+            except:
+                return "Invalid time format. Please use HH:MM format (e.g., 13:02)."
+            
+            # Get period times from timetable with start/end times
+            day_schedule = timetable[current_day]
+            periods = self.sheets.get_all_period_times()
+            
+            for period_num in sorted(day_schedule.keys(), key=int):
+                subject = day_schedule[period_num]
+                period_time = periods.get(period_num)
+                if period_time:
+                    try:
+                        start_hour, start_minute = map(int, period_time[0].split(":"))
+                        start_minutes = start_hour * 60 + start_minute
+                        
+                        if start_minutes > current_minutes:
+                            return f"Next period: Period {period_num} - {subject} at {period_time[0]}"
+                    except:
+                        continue
+            
+            return "No more classes scheduled for today."
+        
+        if name == "get_timetable":
+            day = args.get("day", "").capitalize()
+            timetable = self.sheets.get_timetable()
+            
+            if not timetable:
+                return "No timetable available."
+            
+            if day:
+                if day in timetable:
+                    day_schedule = timetable[day]
+                    response = f"Timetable for {day}:\n"
+                    for period_num in sorted(day_schedule.keys(), key=int):
+                        subject = day_schedule[period_num]
+                        response += f"Period {period_num}: {subject}\n"
+                    return response.strip()
+                else:
+                    return f"No timetable found for {day}. Available days: {', '.join(timetable.keys())}"
+            else:
+                # Return full timetable summary
+                response = "Full timetable:\n\n"
+                for day in sorted(timetable.keys()):
+                    day_schedule = timetable[day]
+                    response += f"{day}:\n"
+                    for period_num in sorted(day_schedule.keys(), key=int):
+                        subject = day_schedule[period_num]
+                        response += f"  Period {period_num}: {subject}\n"
+                    response += "\n"
+                return response.strip()
+        
         if name == "sheet_read":
             allowed = {"timetable": self.sheets.get_timetable, "attendance_log": lambda: self.sheets.get_attendance_stats(), "exceptions": lambda: self.sheets.get_exceptions_for_date(local_today()), "settings": lambda: {key: self.sheets.get_setting(key) for key in ("threshold", "reminders", "reminder_delay")}}
             reader = allowed.get(args.get("sheet", "").lower())
@@ -278,9 +347,27 @@ class GeminiAssistant:
             return {"text": "AI suggestions are not configured yet. Add Gemini keys to ai.env."}
         try:
             config = types.GenerateContentConfig(
-                system_instruction=f"You are Attendance Mate's concise attendance assistant. {date_context()} Use these dates and weekdays for today/tomorrow and date questions. Read Google Sheet data through tools. Never invent values. For any write, edit, or delete, return the tool call for confirmation. Ask a short clarifying question if date, period, or target is ambiguous.",
+                system_instruction=f"""You are Attendance Mate, a friendly and helpful attendance assistant. {date_context()} 
+
+IMPORTANT INSTRUCTIONS:
+1. Be conversational and helpful - talk like a human assistant, not a robot
+2. When users ask about timetable, use the get_next_period or get_timetable tools
+3. For "next period" questions, ask for current time if not provided, then use get_next_period
+4. For attendance questions, use attendance_summary tool
+5. Never return raw JSON data - always format responses as natural text
+6. Keep responses concise but friendly
+7. If you need to read Google Sheet data, use the available tools
+8. For any write, edit, or delete actions, return the tool call for confirmation
+9. Ask clarifying questions if date, period, or target is ambiguous
+
+Example responses:
+- "Your next class is Period 2 - ECO at 10:30"
+- "You have MDC next at 11:30"
+- "Your overall attendance is 85.5%"
+
+Never show raw JSON or technical details to the user.""",
                 tools=[types.Tool(function_declarations=self._declaration())],
-                temperature=0.2,
+                temperature=0.7,
             )
             context = ""
             if history:
