@@ -7,7 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from bot.sheets import SheetsManager
-from bot.ai import GeminiAssistant
+from bot.patterns import PatternMatcher
 from bot.time_utils import now, today as local_today
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def menu_keyboard():
 class BotHandlers:
     def __init__(self, sheets: SheetsManager):
         self.sheets = sheets
-        self.ai = GeminiAssistant(sheets)
+        self.pattern_matcher = PatternMatcher(sheets)
 
     async def _show(self, update, text, markup=None):
         if update.callback_query:
@@ -75,39 +75,41 @@ class BotHandlers:
             except Exception as e:
                 logger.warning(f"Failed to get conversation history: {e}")
                 previous_turns = []  # Continue without history if it fails
-            if self._asks_for_last_prompt(prompt):
-                last_prompt = next((turn["text"] for turn in reversed(previous_turns) if turn["role"] == "user"), None)
-                response_text = f"Your last prompt was:\n\n{last_prompt}" if last_prompt else "I do not have an earlier prompt saved yet."
-                self.sheets.add_conversation_turn(chat_id, "user", prompt)
-                self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
-                await update.message.reply_text(response_text)
-                return
-            self.sheets.add_conversation_turn(chat_id, "user", prompt)
-            try:
-                result = await self.ai.ask(prompt, previous_turns)
-            except Exception as e:
-                logger.error(f"AI request failed: {e}")
-                await update.message.reply_text("I'm having trouble processing your request right now. Please try again.")
-                return
-            if result.get("pending"):
-                context.user_data["pending_ai_action"] = result["pending"]
-                response_text = f"{result['text']}\n\n{self._action_summary(result['pending'])}"
-                try:
-                    await update.message.reply_text(response_text, reply_markup=InlineKeyboardMarkup([[button("Confirm", "ai:confirm"), button("Cancel", "ai:cancel")]]))
-                except Exception as e:
-                    logger.error(f"Failed to send response: {e}")
-                    await update.message.reply_text("I found an action to perform. Please type 'confirm' to proceed.")
+            
+            # Use pattern matcher instead of AI
+            action = self.pattern_matcher.match(prompt)
+            
+            if action:
+                if action.get("type") == "message":
+                    # Direct message response
+                    await update.message.reply_text(action["text"])
+                    self.sheets.add_conversation_turn(chat_id, "assistant", action["text"])
+                elif action.get("type") == "action":
+                    # Action requiring confirmation
+                    context.user_data["pending_action"] = action
+                    description = action.get("description", "Execute action")
+                    await update.message.reply_text(
+                        f"I can do this: {description}\n\nPlease confirm to execute.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✅ Confirm", callback_data="action:confirm"),
+                             InlineKeyboardButton("❌ Cancel", callback_data="action:cancel")]
+                        ])
+                    )
+                else:
+                    await update.message.reply_text("I understood that but couldn't process it. Please try rephrasing.")
             else:
-                response_text = result["text"]
-                try:
-                    await update.message.reply_text(response_text)
-                except Exception as e:
-                    logger.error(f"Failed to send response: {e}")
-                    await update.message.reply_text("Response ready but couldn't send properly.")
-            try:
-                self.sheets.add_conversation_turn(chat_id, "assistant", response_text)
-            except Exception as e:
-                logger.warning(f"Failed to save conversation turn: {e}")
+                # No pattern matched, show help
+                await update.message.reply_text(
+                    "I didn't understand that. Try:\n"
+                    "- 'next period' or 'what's the next class'\n"
+                    "- 'no class today' or 'no class tomorrow'\n"
+                    "- 'no class from 03-08-2026 to 05-08-2026'\n"
+                    "- 'show my attendance'\n"
+                    "- 'show timetable'\n"
+                    "- Or use the menu buttons below."
+                )
+            
+            self.sheets.add_conversation_turn(chat_id, "user", prompt)
 
     @staticmethod
     def _asks_for_last_prompt(prompt: str) -> bool:
@@ -238,62 +240,64 @@ The AI learns from your confirmed actions and creates reusable patterns.
                 await self.subject_history_page(update, subject)
             elif data.startswith("subject_edit:"):
                 await self.subject_edit_page(update, data.split(":", 1)[1])
-            elif data == "ai:confirm":
-                await self.ai_confirm(update, context)
-            elif data == "ai:cancel":
-                context.user_data.pop("pending_ai_action", None)
+            elif data == "action:confirm":
+                await self.action_confirm(update, context)
+            elif data == "action:cancel":
+                context.user_data.pop("pending_action", None)
                 await query.edit_message_text("Cancelled.")
-            elif data == "ai:save_pattern":
-                await self.ai_save_pattern(update, context)
-            elif data == "ai:pattern_skip":
-                await self.ai_pattern_skip(update, context)
             else:
                 await self._show(update, "That action is no longer available.", InlineKeyboardMarkup([self._back()]))
         except Exception:
             logger.exception("Callback failed: %s", data)
             await self._show(update, "Could not load that screen. Please refresh.", InlineKeyboardMarkup([self._back()]))
 
-    async def ai_confirm(self, update, context):
-        action = context.user_data.pop("pending_ai_action", None)
+    async def action_confirm(self, update, context):
+        """Execute confirmed action."""
+        action = context.user_data.pop("pending_action", None)
         if not action:
-            await update.callback_query.edit_message_text("That request has expired. Please ask again.")
+            await update.callback_query.edit_message_text("That action has expired. Please try again.")
             return
         
-        # Strip context from prompt before saving
-        original_prompt = action.get("prompt", "")
-        clean_prompt = self.ai._strip_context_from_prompt(original_prompt)
-        action["prompt"] = clean_prompt
-        
-        # Execute the action first
         chat_id = update.effective_chat.id if update.effective_chat else None
-        result = await __import__("asyncio").to_thread(self.ai.execute, action, chat_id)
         
-        # Store action for pattern saving
-        context.user_data["last_ai_action"] = action
-        context.user_data["last_ai_result"] = result
+        # Execute the action
+        action_name = action.get("action")
+        action_args = action.get("args", {})
         
-        # Ask if user wants to save pattern
-        if clean_prompt:
-            suggested_prompt = self.ai.suggest_pattern_refinement(clean_prompt, action)
-            action_desc = self.ai._describe_action(action)
+        if action_name == "add_day_holidays":
+            from bot.time_utils import today
+            from datetime import timedelta
             
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Save Pattern", callback_data="ai:save_pattern"),
-                    InlineKeyboardButton("❌ Skip", callback_data="ai:pattern_skip")
-                ],
-                [self._back()]
-            ])
+            start = today()
+            end = today()
             
-            message = f"✅ {result}\n\n"
-            message += f"💡 Do you want to save this as a pattern?\n\n"
-            message += f"**Suggested prompt:** {suggested_prompt}\n"
-            message += f"**Action:** {action_desc}\n\n"
-            message += "This will let you trigger this action with similar phrases in the future."
+            if "start" in action_args:
+                try:
+                    from datetime import datetime
+                    start = datetime.fromisoformat(action_args["start"]).date()
+                except:
+                    pass
             
-            await update.callback_query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
+            if "end" in action_args:
+                try:
+                    from datetime import datetime
+                    end = datetime.fromisoformat(action_args["end"]).date()
+                except:
+                    pass
+            
+            count = 0
+            current = start
+            while current <= end:
+                if not self.sheets.is_exception(current):
+                    self.sheets.add_exception(current, "day", reason=action_args.get("reason", "No class"))
+                    count += 1
+                current += timedelta(days=1)
+            
+            result = f"Added {count} holiday date{'s' if count != 1 else ''}."
         else:
-            await update.callback_query.edit_message_text(result)
+            result = "Action executed successfully."
+        
+        await update.callback_query.edit_message_text(f"✅ {result}")
         if update.effective_chat:
             self.sheets.add_conversation_turn(update.effective_chat.id, "assistant", result)
     

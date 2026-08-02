@@ -218,6 +218,12 @@ class SheetsManager:
             rows = undo_stack.get_all_values()
             if not any(any(cell.strip() for cell in row) for row in rows):
                 undo_stack.append_row(["Chat ID", "Undo Data", "Expiry Time"])
+
+        prompts_actions = self._get_worksheet("Prompts_Actions")
+        if prompts_actions:
+            rows = prompts_actions.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                prompts_actions.append_row(["Pattern", "Action JSON", "Active"])
     
     def get_subject_map(self) -> dict:
         """Get subject normalization mapping."""
