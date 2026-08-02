@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
+
+@app.route("/", methods=["GET", "HEAD"])
+def index():
+    """Simple health endpoint for hosting platform health checks."""
+    return "AttendanceMate is running", 200
+
 # Global variables for bot components
 application = None
 scheduler = None
