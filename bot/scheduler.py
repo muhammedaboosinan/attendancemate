@@ -51,23 +51,13 @@ class ReminderScheduler:
     
     def stop_sync(self):
         """Synchronous stop method for non-async contexts."""
-        import asyncio
+        # Just mark as stopped without using event loops
         if self._tasks:
             for task in self._tasks:
                 try:
                     task.cancel()
                 except Exception:
                     pass  # Ignore errors during shutdown
-            # Try to clean up tasks, but don't fail if event loop is closed
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(asyncio.gather(*self._tasks, return_exceptions=True))
-                finally:
-                    loop.close()
-            except Exception:
-                pass  # Event loop might be closed during shutdown
         self._tasks.clear()
         self.running = False
         logger.info("Reminder scheduler stopped (sync)")

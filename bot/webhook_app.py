@@ -6,6 +6,7 @@ import os
 import logging
 import threading
 import asyncio
+import atexit
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -105,11 +106,10 @@ def cleanup_scheduler():
     """Clean up scheduler on shutdown."""
     global scheduler
     if scheduler:
-        logger.info("Cleaning up scheduler...")
         try:
-            scheduler.stop_sync()
-        except Exception as e:
-            logger.warning(f"Error during scheduler cleanup: {e}")
+            scheduler.running = False
+        except Exception:
+            pass  # Ignore any errors during shutdown
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -147,9 +147,11 @@ def index():
     return {"status": "Telegram Attendance Bot is running", "mode": "webhook"}, 200
 
 # Initialize bot on module import
-if init_bot():
-    try:
-        atexit.register(cleanup_scheduler)
-        logger.info("Cleanup function registered")
-    except Exception as e:
-        logger.warning(f"Could not register cleanup function: {e}")
+init_bot()
+
+# Register cleanup function
+try:
+    atexit.register(cleanup_scheduler)
+    logger.info("Cleanup function registered")
+except Exception as e:
+    logger.warning(f"Could not register cleanup function: {e}")
