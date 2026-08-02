@@ -182,8 +182,7 @@ class GeminiAssistant:
         if action:
             # Check if this is a pattern match (not exact match)
             if isinstance(action, dict) and "name" in action:
-                # Add the original prompt for context
-                action["prompt"] = prompt
+                action["prompt"] = prompt  # Store original prompt for context
                 return action
         return None
 
