@@ -53,6 +53,11 @@ def init_bot():
 
         # Create Telegram application
         application = Application.builder().token(Config.BOT_TOKEN).build()
+        
+        # Initialize the application (required for webhook mode)
+        bot_loop.run_until_complete(application.initialize())
+        logger.info("Application initialized")
+        
         handlers = BotHandlers(sheets)
 
         # Add handlers
