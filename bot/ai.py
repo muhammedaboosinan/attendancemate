@@ -361,11 +361,19 @@ class GeminiAssistant:
         return json.dumps({"error": "This action changes data and must be confirmed."})
 
     async def ask(self, prompt: str, history: list[dict] | None = None, _attempt: int = 0) -> dict:
-        direct = self._pattern_action(prompt) or self._holiday_action(prompt)
+        # Check for holiday prompts first (simpler matching)
+        direct = self._holiday_action(prompt)
         if direct:
             direct["prompt"] = prompt
             action_desc = self._describe_action(direct)
-            return {"text": f"I found a saved pattern for: {action_desc}\n\nPlease confirm to execute.", "pending": direct}
+            return {"text": f"I can do this: {action_desc}\n\nPlease confirm to execute.", "pending": direct}
+        
+        # Check for saved patterns - but don't auto-execute, just suggest
+        pattern_action = self._pattern_action(prompt)
+        if pattern_action:
+            action_desc = self._describe_action(pattern_action)
+            return {"text": f"I found a saved pattern: {action_desc}\n\nYou can confirm to execute, or ignore and I'll try a different approach.", "pending": pattern_action}
+        
         client = self._client()
         if not client:
             return {"text": "AI suggestions are not configured yet. Add Gemini keys to ai.env."}
@@ -441,6 +449,42 @@ Never show raw JSON or technical details to the user.""",
         }
         
         return descriptions.get(name, f"Execute {name}")
+    
+    def suggest_pattern_refinement(self, original_prompt: str, action: dict) -> str:
+        """Suggest a refined pattern prompt based on the action."""
+        name = action.get("name", "")
+        args = action.get("args", {})
+        
+        # Smart pattern suggestions based on action type
+        if name == "add_day_holidays":
+            if args.get("start") == args.get("end"):
+                return f"no class on {args.get('start', 'date')}"
+            else:
+                return f"no class from {args.get('start', 'start_date')} to {args.get('end', 'end_date')}"
+        
+        elif name == "add_period_exception":
+            date = args.get('date', 'date')
+            period = args.get('period', 'period')
+            return f"no class period {period} on {date}"
+        
+        elif name == "edit_timetable":
+            day = args.get('day', 'day')
+            period = args.get('period', 'period')
+            subject = args.get('subject', 'subject')
+            return f"change {day} period {period} to {subject}"
+        
+        elif name == "remove_exception":
+            date = args.get('date', 'date')
+            return f"remove exception for {date}"
+        
+        elif name == "update_setting":
+            key = args.get('key', 'setting')
+            value = args.get('value', 'value')
+            return f"set {key} to {value}"
+        
+        else:
+            # Fallback to original prompt, cleaned up
+            return " ".join(original_prompt.lower().split())
 
     def execute(self, action: dict, chat_id: int = None) -> str:
         """Execute action with undo support and audit logging."""

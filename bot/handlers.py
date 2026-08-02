@@ -216,6 +216,10 @@ The AI learns from your confirmed actions and creates reusable patterns.
             elif data == "ai:cancel":
                 context.user_data.pop("pending_ai_action", None)
                 await query.edit_message_text("Cancelled.")
+            elif data == "ai:save_pattern":
+                await self.ai_save_pattern(update, context)
+            elif data == "ai:pattern_skip":
+                await self.ai_pattern_skip(update, context)
             else:
                 await self._show(update, "That action is no longer available.", InlineKeyboardMarkup([self._back()]))
         except Exception:
@@ -227,13 +231,68 @@ The AI learns from your confirmed actions and creates reusable patterns.
         if not action:
             await update.callback_query.edit_message_text("That request has expired. Please ask again.")
             return
-        if action.get("prompt"):
-            self.ai.remember_action(action["prompt"], action)
+        
+        # Execute the action first
         chat_id = update.effective_chat.id if update.effective_chat else None
         result = await __import__("asyncio").to_thread(self.ai.execute, action, chat_id)
-        await update.callback_query.edit_message_text(result)
+        
+        # Store action for pattern saving
+        context.user_data["last_ai_action"] = action
+        context.user_data["last_ai_result"] = result
+        
+        # Ask if user wants to save pattern
+        original_prompt = action.get("prompt", "")
+        if original_prompt:
+            suggested_prompt = self.ai.suggest_pattern_refinement(original_prompt, action)
+            action_desc = self.ai._describe_action(action)
+            
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Save Pattern", callback_data="ai:save_pattern"),
+                    InlineKeyboardButton("❌ Skip", callback_data="ai:pattern_skip")
+                ],
+                [self._back()]
+            ])
+            
+            message = f"✅ {result}\n\n"
+            message += f"💡 Do you want to save this as a pattern?\n\n"
+            message += f"**Suggested prompt:** {suggested_prompt}\n"
+            message += f"**Action:** {action_desc}\n\n"
+            message += "This will let you trigger this action with similar phrases in the future."
+            
+            await update.callback_query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
+        else:
+            await update.callback_query.edit_message_text(result)
         if update.effective_chat:
             self.sheets.add_conversation_turn(update.effective_chat.id, "assistant", result)
+    
+    async def ai_save_pattern(self, update, context):
+        """Save the last AI action as a pattern."""
+        action = context.user_data.pop("last_ai_action", None)
+        result = context.user_data.pop("last_ai_result", None)
+        
+        if not action:
+            await update.callback_query.edit_message_text("Action expired. Please ask again.")
+            return
+        
+        original_prompt = action.get("prompt", "")
+        suggested_prompt = self.ai.suggest_pattern_refinement(original_prompt, action)
+        
+        # Save with the suggested prompt
+        self.ai.remember_action(suggested_prompt, action)
+        
+        await update.callback_query.edit_message_text(
+            f"✅ Pattern saved!\n\nNext time you can say \"{suggested_prompt}\" to trigger this action."
+        )
+    
+    async def ai_pattern_skip(self, update, context):
+        """Skip saving the pattern."""
+        result = context.user_data.pop("last_ai_result", None)
+        context.user_data.pop("last_ai_action", None)
+        
+        await update.callback_query.edit_message_text(
+            f"✅ {result}\n\nPattern not saved. You can manually save patterns later using /patterns."
+        )
 
     async def render_screen(self, update, context, screen):
         if screen == "main":
