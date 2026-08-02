@@ -4,3 +4,5 @@ google-auth==2.27.0
 python-dotenv==1.0.1
 telethon==1.42.0
 google-genai>=1.0.0
+flask==3.0.0
+gunicorn==21.2.0

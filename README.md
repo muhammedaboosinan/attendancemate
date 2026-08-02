@@ -237,13 +237,89 @@ You can edit the Timetable tab directly in Google Sheets:
 
 ## Deployment to Render
 
-When ready to deploy:
+### Prerequisites
+- Your code pushed to GitHub
+- Google Sheets service account with edit access to your sheet
+- Bot token from @BotFather
+- Your Telegram Chat ID
 
-1. Push code to GitHub
-2. Create a new Web Service on Render
-3. Set environment variables in Render dashboard
-4. Upload `credentials.json` as a Render Secret File
-5. Use webhook mode instead of polling (update main.py)
+### Step 1: Prepare Repository
+1. Push your code to GitHub
+2. Ensure `requirements.txt`, `Procfile`, and `runtime.txt` are in the root
+3. Don't commit `token.env`, `credentials.json`, or `ai.env`
+
+### Step 2: Create Render Web Service
+1. Go to [Render.com](https://render.com) and sign up
+2. Click "New +" → "Web Service"
+3. Connect your GitHub repository
+4. Configure the web service:
+   - **Name**: attendance-bot (or your preferred name)
+   - **Region**: Select region closest to you
+   - **Branch**: main (or your branch)
+   - **Runtime**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn bot.webhook_app:app`
+
+### Step 3: Add Environment Variables
+Add these environment variables in Render's Environment section:
+
+**Required:**
+- `BOT_TOKEN`: Your Telegram bot token from @BotFather
+- `TELEGRAM_CHAT_ID`: Your Telegram chat ID
+- `GOOGLE_SHEET_ID`: Your Google Sheet ID
+
+**Required Secret File:**
+- `credentials.json`: Your Google Sheets service account credentials
+  - Upload as a Secret File in Render
+  - File path: `credentials.json`
+
+**Optional:**
+- `CHECK_INTERVAL_MINUTES`: `1` (default)
+- `REMINDER_RETRY_MINUTES`: `5` (default)
+- `TIMEZONE`: `Asia/Kolkata` (default)
+- `AI_MODEL`: `gemini-2.5-flash` (default)
+- `API_KEY_1`, `API_KEY_2`, etc.: Gemini API keys for AI features
+
+### Step 4: Configure Webhook
+After deployment, you need to set up the Telegram webhook:
+
+1. Get your Render service URL from the Render dashboard
+2. Your webhook URL will be: `https://your-service-name.onrender.com/webhook`
+3. Set the webhook using curl or Telegram API:
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+   -H "Content-Type: application/json" \
+   -d '{"url": "https://your-service-name.onrender.com/webhook"}'
+   ```
+
+### Step 5: Test the Deployment
+1. Send `/start` to your bot on Telegram
+2. Verify the bot responds
+3. Check the Render logs for any errors
+4. Test attendance marking and reminders
+
+### Troubleshooting Render Deployment
+
+**Bot not responding:**
+- Check Render logs for errors
+- Verify environment variables are set correctly
+- Ensure credentials.json secret file is configured
+- Verify webhook is set correctly
+
+**Reminders not working:**
+- Ensure TELEGRAM_CHAT_ID is set
+- Check scheduler initialization in logs
+- Verify timezone configuration
+
+**Google Sheets connection issues:**
+- Verify credentials.json has correct permissions
+- Ensure service account email has edit access to the sheet
+- Check GOOGLE_SHEET_ID is correct
+
+**Webhook issues:**
+- Use Telegram's getWebhookInfo to check webhook status
+- Ensure Render service URL is correct
+- Check Render service is running
 
 ## Testing
 

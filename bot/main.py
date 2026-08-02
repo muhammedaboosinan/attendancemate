@@ -1,10 +1,11 @@
 """
 Main application entry point.
-Starts the Telegram bot with polling and initializes all components.
+Starts the Telegram bot with polling (for local development) or webhook (for production).
 """
 import asyncio
 import logging
 import sys
+import os
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -28,7 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main entry point for the bot."""
+    """Main entry point for the bot - uses polling for local development."""
+    # Check if running in production (Render) or development
+    use_webhook = os.environ.get('USE_WEBHOOK', 'false').lower() == 'true'
+    
+    if use_webhook:
+        logger.info("Webhook mode requested - use bot/flask_main.py instead")
+        print("❌ For webhook mode, please run: python -m bot.flask_main")
+        return
+    
+    # Polling mode (local development)
     try:
         Config.validate()
         logger.info("Configuration validated")
@@ -44,6 +54,9 @@ def main():
         application.add_handler(CommandHandler("start", handlers.start_command))
         application.add_handler(CommandHandler("help", handlers.help_command))
         application.add_handler(CommandHandler("about", handlers.about_command))
+        application.add_handler(CommandHandler("reset", handlers.reset_command))
+        application.add_handler(CommandHandler("undo", handlers.undo_command))
+        application.add_handler(CommandHandler("patterns", handlers.patterns_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.main_menu_message))
         application.add_handler(CallbackQueryHandler(handlers.button_callback, pattern=".*"))
 

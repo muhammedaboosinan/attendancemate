@@ -1,1 +1,1 @@
-worker: python -m bot.main
+web: gunicorn bot.webhook_app:app

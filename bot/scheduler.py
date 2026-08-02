@@ -94,7 +94,9 @@ class ReminderScheduler:
         
         # Get timetable
         timetable = self.sheets.get_timetable()
+        logger.info("Today is " + day_name + ", timetable keys: " + str(list(timetable.keys())))
         if day_name not in timetable:
+            logger.info("Day " + day_name + " not found in timetable")
             return
         
         # Legacy fallback for timetable rows without Start/End values.
@@ -135,7 +137,7 @@ class ReminderScheduler:
             # Send once after the configured class end, even if the bot restarted late.
             if current_time >= end_time:
                     
-                reminder_key = f"{today}_{period_num}"
+                reminder_key = f"{today.isoformat()}:{period_num}"
                 if reminder_key not in self.sent_reminders:
                     sent = await self._send_reminder(period_num, subject, today)
                     if sent:

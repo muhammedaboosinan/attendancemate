@@ -136,6 +136,7 @@ class SheetsManager:
                     ["Friday", "3", "AEC-EL", "11:30", "12:30"],
                     ["Friday", "4", "AEC-LE", "13:30", "14:30"],
                     ["Friday", "5", "MINOR 2", "14:30", "15:30"],
+                    ["Saturday", "1", "MINOR 1", "20:10", "20:20"],
                 ]
                 for row in timetable_data:
                     timetable.append_row(row)
@@ -194,6 +195,18 @@ class SheetsManager:
             rows = memory.get_all_values()
             if not any(any(cell.strip() for cell in row) for row in rows):
                 memory.append_row(["Chat ID", "Role", "Text", "Timestamp"])
+
+        audit_log = self._get_worksheet("AI_Audit_Log")
+        if audit_log:
+            rows = audit_log.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                audit_log.append_row(["Timestamp", "Chat ID", "Action", "Parameters", "Result", "Status"])
+
+        undo_stack = self._get_worksheet("AI_Undo_Stack")
+        if undo_stack:
+            rows = undo_stack.get_all_values()
+            if not any(any(cell.strip() for cell in row) for row in rows):
+                undo_stack.append_row(["Chat ID", "Undo Data", "Expiry Time"])
     
     def get_subject_map(self) -> dict:
         """Get subject normalization mapping."""
@@ -429,18 +442,89 @@ class SheetsManager:
         return default
 
     def get_prompt_pattern(self, prompt: str) -> Optional[dict]:
+        """Get prompt pattern with variable extraction using pattern matching."""
         patterns = self._get_worksheet("Prompt_Patterns")
         if not patterns:
             return None
+        import re
+        import json
+        
         normalized = " ".join(prompt.lower().split())
+        
         for row in self._read_values("Prompt_Patterns", patterns)[1:]:
-            if len(row) >= 3 and row[0] == normalized and row[2].lower() == "true":
+            if len(row) >= 3 and row[2].lower() == "true":
                 try:
-                    import json
-                    return json.loads(row[1])
+                    pattern_data = json.loads(row[1])
+                    # Handle both old format (direct action) and new format (with template/variables)
+                    if isinstance(pattern_data, dict) and "action" in pattern_data:
+                        template = pattern_data.get("template", row[0])
+                        variables = pattern_data.get("variables", {})
+                        
+                        # Try pattern matching with variable extraction
+                        if self._match_pattern(template, normalized, variables):
+                            action = pattern_data.get("action", {})
+                            # Extract variables from the current prompt
+                            extracted_vars = self._extract_variables(template, normalized, variables)
+                            # Replace variables in action
+                            resolved_action = self._resolve_action_variables(action, extracted_vars)
+                            return resolved_action
+                    else:
+                        # Old format - exact match only
+                        if row[0] == normalized:
+                            return pattern_data
                 except json.JSONDecodeError:
-                    logger.warning("Invalid Prompt_Patterns action for %s", normalized)
+                    logger.warning("Invalid Prompt_Patterns action for %s", row[0])
         return None
+    
+    def _match_pattern(self, template: str, prompt: str, variables: dict) -> bool:
+        """Check if prompt matches the template pattern."""
+        import re
+        
+        # If no variables, check exact match
+        if not variables:
+            return template == prompt
+        
+        # Create regex pattern from template
+        pattern = template
+        for var_name in variables.keys():
+            # Replace variable placeholders with regex patterns
+            pattern = pattern.replace(f"{{{var_name}}}", r"(.+)")
+        
+        # Try to match
+        match = re.match(pattern, prompt, re.IGNORECASE)
+        return match is not None
+    
+    def _extract_variables(self, template: str, prompt: str, variables: dict) -> dict:
+        """Extract variable values from prompt based on template."""
+        import re
+        
+        extracted = {}
+        pattern = template
+        var_names = list(variables.keys())
+        
+        # Create regex pattern with named groups
+        for i, var_name in enumerate(var_names):
+            pattern = pattern.replace(f"{{{var_name}}}", f"(?P<{var_name}>.+)")
+        
+        match = re.match(pattern, prompt, re.IGNORECASE)
+        if match:
+            for var_name in var_names:
+                value = match.group(var_name)
+                if value:
+                    extracted[var_name] = value.strip()
+        
+        return extracted
+    
+    def _resolve_action_variables(self, action: dict, variables: dict) -> dict:
+        """Replace variable placeholders in action with extracted values."""
+        import json
+        action_str = json.dumps(action)
+        
+        for var_name, var_value in variables.items():
+            placeholder = f"{{{var_name}}}"
+            action_str = action_str.replace(placeholder, str(var_value))
+        
+        return json.loads(action_str)
 
     def add_conversation_turn(self, chat_id: int, role: str, text: str) -> bool:
         memory = self._get_worksheet("Conversation_Memory")
@@ -460,16 +544,64 @@ class SheetsManager:
                 turns.append({"role": row[1], "text": row[2], "timestamp": row[3]})
         return turns[-limit:]
 
-    def save_prompt_pattern(self, prompt: str, action: dict) -> bool:
+    def clear_conversation_memory(self, chat_id: int) -> bool:
+        """Clear all conversation memory for a specific chat_id."""
+        memory = self._get_worksheet("Conversation_Memory")
+        if not memory:
+            return False
+        rows = self._read_values("Conversation_Memory", memory)
+        indices_to_delete = []
+        for index in range(len(rows), 1, -1):
+            row = rows[index - 1]
+            if len(row) >= 1 and row[0] == str(chat_id):
+                indices_to_delete.append(index)
+        for index in indices_to_delete:
+            memory.delete_rows(index)
+        self.clear_cache()
+        return len(indices_to_delete) > 0
+
+    def log_ai_action(self, chat_id: int, action: str, parameters: dict, result: str, status: str = "success") -> bool:
+        """Log AI action to audit log."""
+        audit_log = self._get_worksheet("AI_Audit_Log")
+        if not audit_log:
+            return False
+        import json
+        audit_log.append_row([
+            local_now().isoformat(),
+            str(chat_id),
+            action,
+            json.dumps(parameters),
+            result[:500],  # Limit result length
+            status
+        ])
+        self.clear_cache()
+        return True
+
+    def save_prompt_pattern(self, prompt: str, action: dict, variables: dict = None) -> bool:
+        """Save a prompt pattern with extracted variables for flexible matching."""
         patterns = self._get_worksheet("Prompt_Patterns")
         if not patterns:
             return False
+        import json
         normalized = " ".join(prompt.lower().split())
+        
+        # Check if pattern already exists
         for row in self._read_values("Prompt_Patterns", patterns)[1:]:
             if len(row) >= 1 and row[0] == normalized:
                 return True
-        import json
-        patterns.append_row([normalized, json.dumps(action), "TRUE", local_now().isoformat()])
+        
+        # Save with pattern template and variables
+        pattern_data = {
+            "action": action,
+            "variables": variables or {},
+            "template": prompt
+        }
+        patterns.append_row([
+            normalized,
+            json.dumps(pattern_data),
+            "TRUE",
+            local_now().isoformat()
+        ])
         self.clear_cache()
         return True
 

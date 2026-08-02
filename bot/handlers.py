@@ -100,10 +100,88 @@ class BotHandlers:
         return "Apply this Google Sheet change?"
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await self._show(update, "*How to use*\n\nUse the buttons to view attendance, mark Today, and manage your timetable.\n\nOnly /start, /help, and /about are needed.", InlineKeyboardMarkup([self._back()]))
+        help_text = """*How to use*
+
+*Basic Commands:*
+/start - Start the bot
+/help - Show this help message
+/about - About the bot
+/reset - Clear AI conversation memory
+/undo - Undo last AI action (within 5 minutes)
+/patterns - Show your saved prompt patterns
+
+*Attendance:*
+Use the menu buttons to mark attendance, view stats, and manage your timetable.
+
+*AI Assistant:*
+Send natural language messages to interact with the AI:
+• "What's my attendance in ECO?"
+• "Add holiday for tomorrow"
+• "Mark period 3 as no class today"
+
+The AI learns from your confirmed actions and creates reusable patterns.
+"""
+        await self._show(update, help_text, InlineKeyboardMarkup([self._back()]))
 
     async def about_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._show(update, "*Attendance Mate*\n\nPersonal attendance tracker\nVersion 2.0", InlineKeyboardMarkup([self._back()]))
+
+    async def reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        deleted = self.sheets.clear_conversation_memory(chat_id)
+        if deleted:
+            await update.message.reply_text("✅ AI memory cleared successfully.")
+        else:
+            await update.message.reply_text("No AI memory to clear.")
+
+    async def undo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        undo_data = self.ai.get_undo_action(chat_id)
+        if undo_data:
+            try:
+                result = await __import__("asyncio").to_thread(self.ai.execute, undo_data, chat_id)
+                await update.message.reply_text(f"✅ Undo successful: {result}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Undo failed: {str(e)}")
+        else:
+            await update.message.reply_text("No recent action to undo or undo time has expired (5 minutes).")
+
+    async def patterns_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show saved prompt patterns to the user."""
+        patterns = self.sheets._get_worksheet("Prompt_Patterns")
+        if not patterns:
+            await update.message.reply_text("No saved patterns found.")
+            return
+        
+        rows = self.sheets._read_values("Prompt_Patterns", patterns)
+        if len(rows) <= 1:
+            await update.message.reply_text("No saved patterns found.")
+            return
+        
+        import json
+        pattern_list = []
+        for row in rows[1:]:
+            if len(row) >= 3 and row[2].lower() == "true":
+                try:
+                    pattern_data = json.loads(row[1])
+                    if isinstance(pattern_data, dict) and "template" in pattern_data:
+                        template = pattern_data["template"]
+                        variables = pattern_data.get("variables", {})
+                        action = pattern_data.get("action", {}).get("name", "unknown")
+                        var_info = f" (vars: {', '.join(variables.keys())})" if variables else ""
+                        pattern_list.append(f"• {template}\n  → {action}{var_info}")
+                    else:
+                        pattern_list.append(f"• {row[0]}")
+                except:
+                    pattern_list.append(f"• {row[0]}")
+        
+        if pattern_list:
+            response = "Your saved patterns:\n\n" + "\n".join(pattern_list[:10])  # Limit to 10 patterns
+            if len(pattern_list) > 10:
+                response += f"\n\n... and {len(pattern_list) - 10} more"
+            await update.message.reply_text(response)
+        else:
+            await update.message.reply_text("No active patterns found.")
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -151,7 +229,8 @@ class BotHandlers:
             return
         if action.get("prompt"):
             self.ai.remember_action(action["prompt"], action)
-        result = await __import__("asyncio").to_thread(self.ai.execute, action)
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        result = await __import__("asyncio").to_thread(self.ai.execute, action, chat_id)
         await update.callback_query.edit_message_text(result)
         if update.effective_chat:
             self.sheets.add_conversation_turn(update.effective_chat.id, "assistant", result)
