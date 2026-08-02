@@ -49,6 +49,23 @@ class ReminderScheduler:
         self._tasks.clear()
         logger.info("Reminder scheduler stopped")
     
+    def stop_sync(self):
+        """Synchronous stop method for non-async contexts."""
+        import asyncio
+        if self._tasks:
+            for task in self._tasks:
+                task.cancel()
+            # Create new event loop for cleanup
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(asyncio.gather(*self._tasks, return_exceptions=True))
+            finally:
+                loop.close()
+        self._tasks.clear()
+        self.running = False
+        logger.info("Reminder scheduler stopped (sync)")
+    
     async def _check_loop(self):
         """Main loop that checks for period endings."""
         while self.running:

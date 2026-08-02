@@ -6,6 +6,7 @@ import os
 import logging
 import threading
 import asyncio
+import atexit
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -76,7 +77,12 @@ def init_bot():
             def run_scheduler():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(scheduler.start())
+                try:
+                    loop.run_until_complete(scheduler.start())
+                except Exception as e:
+                    logger.error(f"Scheduler error: {e}")
+                finally:
+                    loop.close()
             
             scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
             scheduler_thread.start()
@@ -90,6 +96,13 @@ def init_bot():
     except Exception as e:
         logger.error(f"Failed to initialize bot: {e}", exc_info=True)
         return False
+
+def cleanup_scheduler():
+    """Clean up scheduler on shutdown."""
+    global scheduler
+    if scheduler:
+        logger.info("Cleaning up scheduler...")
+        scheduler.stop_sync()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -125,6 +138,9 @@ def health():
 def index():
     """Root endpoint."""
     return {"status": "Telegram Attendance Bot is running", "mode": "webhook"}, 200
+
+# Register cleanup function
+atexit.register(cleanup_scheduler)
 
 # Initialize bot on module import
 init_bot()
