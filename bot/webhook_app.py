@@ -6,7 +6,6 @@ import os
 import logging
 import threading
 import asyncio
-import atexit
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -148,10 +147,9 @@ def index():
     return {"status": "Telegram Attendance Bot is running", "mode": "webhook"}, 200
 
 # Initialize bot on module import
-init_bot()
-
-# Register cleanup function with error handling after initialization
-try:
-    atexit.register(cleanup_scheduler)
-except Exception as e:
-    logger.warning(f"Could not register cleanup function: {e}")
+if init_bot():
+    try:
+        atexit.register(cleanup_scheduler)
+        logger.info("Cleanup function registered")
+    except Exception as e:
+        logger.warning(f"Could not register cleanup function: {e}")
