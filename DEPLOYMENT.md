@@ -57,6 +57,22 @@ Should return: `{"status": "healthy", "bot_initialized": true}`
 
 Send `/start` to your bot on Telegram and verify it responds.
 
+## Undo Feature
+
+The bot now supports undoing the last action with confirmation:
+
+1. Use `/undo` command
+2. The bot shows what action will be undone
+3. Click **CONFIRM** to undo or **CANCEL** to cancel
+
+Undo works for:
+- Adding/removing exceptions (holidays)
+- Logging attendance (present/absent/no_class)
+- Deleting attendance entries
+- Changing settings
+
+Undo entries expire after 30 minutes.
+
 ## Important Notes
 
 - **Local Development**: Use `python -m bot.main` for polling mode

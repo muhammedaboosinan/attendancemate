@@ -84,7 +84,7 @@ class BotHandlers:
                 try:
                     target_date = self.pattern_matcher._parse_date(prompt)
                     if target_date:
-                        self.sheets.add_exception(target_date, "day", reason="No class")
+                        self.sheets.add_exception(target_date, "day", reason="No class", chat_id=chat_id)
                         await update.message.reply_text(f"✅ Marked {prompt} as no class.")
                         context.user_data.pop("awaiting_date")
                         self.sheets.add_conversation_turn(chat_id, "assistant", f"Marked {prompt} as no class")
@@ -106,7 +106,7 @@ class BotHandlers:
                                 current = start_date
                                 while current <= end_date:
                                     if not self.sheets.is_exception(current):
-                                        self.sheets.add_exception(current, "day", reason="No class")
+                                        self.sheets.add_exception(current, "day", reason="No class", chat_id=chat_id)
                                         count += 1
                                     current += timedelta(days=1)
                                 await update.message.reply_text(f"✅ Marked {count} days as no class.")
@@ -130,7 +130,7 @@ class BotHandlers:
                                 new_status = "absent" if current["status"] == "present" else "present"
                                 day_name = target_date.strftime("%A")
                                 raw = self.sheets.get_class_for_period(day_name, period)
-                                if raw and self.sheets.log_attendance(target_date, day_name, period, raw, new_status):
+                                if raw and self.sheets.log_attendance(target_date, day_name, period, raw, new_status, chat_id=chat_id):
                                     await update.message.reply_text(f"✅ Changed to {new_status}")
                                     context.user_data.pop("awaiting_toggle")
                                     self.sheets.add_conversation_turn(chat_id, "assistant", f"Changed attendance to {new_status}")
@@ -148,7 +148,7 @@ class BotHandlers:
                         target_date = self.pattern_matcher._parse_date(date_str)
                         if target_date:
                             day_name = target_date.strftime("%A")
-                            if self.sheets.delete_attendance_entry(target_date, period):
+                            if self.sheets.delete_attendance_entry(target_date, period, chat_id=chat_id):
                                 await update.message.reply_text("✅ Entry deleted")
                                 context.user_data.pop("awaiting_delete")
                                 self.sheets.add_conversation_turn(chat_id, "assistant", "Attendance entry deleted")
@@ -244,7 +244,40 @@ The AI learns from your confirmed actions and creates reusable patterns.
 
     async def undo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
-        await update.message.reply_text("Undo functionality is disabled. Use the edit buttons in the attendance screen to change entries.")
+        undo_entry = self.sheets.get_undo_entry(chat_id)
+        if not undo_entry:
+            await update.message.reply_text("No recent action to undo.")
+            return
+        
+        data = undo_entry["data"]
+        action = data.get("action", "")
+        description = self._undo_description(data)
+        
+        await update.message.reply_text(
+            f"*Undo Last Action*\n\n{description}\n\nDo you want to undo this action?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ CONFIRM", callback_data="undo:confirm"),
+                 InlineKeyboardButton("❌ CANCEL", callback_data="undo:cancel")]
+            ])
+        )
+    
+    def _undo_description(self, data: dict) -> str:
+        """Generate a human-readable description of an undo action."""
+        action = data.get("action", "")
+        if action == "add_exception":
+            return f"Remove exception for {data.get('date', '')} ({data.get('scope', 'day')})"
+        elif action == "deactivate_exception":
+            return f"Restore exception for {data.get('date', '')} ({data.get('scope', 'day')})"
+        elif action == "log_attendance":
+            if data.get("old_status"):
+                return f"Change attendance for {data.get('date', '')} period {data.get('period', '')} back to '{data.get('old_status', '')}'"
+            return f"Delete attendance entry for {data.get('date', '')} period {data.get('period', '')}"
+        elif action == "delete_attendance":
+            return f"Restore attendance entry for {data.get('date', '')} period {data.get('period', '')}"
+        elif action == "set_setting":
+            return f"Restore setting '{data.get('key', '')}' to '{data.get('old_value', '')}'"
+        return f"Undo action: {action}"
     
     async def patterns_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show available patterns."""
@@ -326,6 +359,10 @@ The AI learns from your confirmed actions and creates reusable patterns.
             elif data == "action:cancel":
                 context.user_data.pop("pending_action", None)
                 await query.edit_message_text("Cancelled.")
+            elif data == "undo:confirm":
+                await self.undo_confirm(update, context)
+            elif data == "undo:cancel":
+                await query.edit_message_text("Undo cancelled.")
             else:
                 await self._show(update, "That action is no longer available.", InlineKeyboardMarkup([self._back()]))
         except Exception:
@@ -370,7 +407,7 @@ The AI learns from your confirmed actions and creates reusable patterns.
             current = start
             while current <= end:
                 if not self.sheets.is_exception(current):
-                    self.sheets.add_exception(current, "day", reason=action_args.get("reason", "No class"))
+                    self.sheets.add_exception(current, "day", reason=action_args.get("reason", "No class"), chat_id=chat_id)
                     count += 1
                 current += timedelta(days=1)
             
@@ -381,6 +418,19 @@ The AI learns from your confirmed actions and creates reusable patterns.
         await update.callback_query.edit_message_text(f"✅ {result}")
         if update.effective_chat:
             self.sheets.add_conversation_turn(update.effective_chat.id, "assistant", result)
+    
+    async def undo_confirm(self, update, context):
+        """Execute confirmed undo action."""
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if not chat_id:
+            await update.callback_query.edit_message_text("Could not identify chat.")
+            return
+        
+        result = self.sheets.undo_action(chat_id)
+        if result.get("success"):
+            await update.callback_query.edit_message_text(f"✅ {result['message']}")
+        else:
+            await update.callback_query.edit_message_text(f"❌ {result['message']}")
     
     async def ai_save_pattern(self, update, context):
         """Save the last AI action as a pattern."""
@@ -548,7 +598,8 @@ The AI learns from your confirmed actions and creates reusable patterns.
         status, date_str, period = value.split(":", 2)
         target = date.fromisoformat(date_str)
         raw = self.sheets.get_class_for_period(target.strftime("%A"), period)
-        if not raw or not self.sheets.log_attendance(target, target.strftime("%A"), period, raw, status):
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if not raw or not self.sheets.log_attendance(target, target.strftime("%A"), period, raw, status, chat_id=chat_id):
             await self._show(update, "Could not save attendance.", InlineKeyboardMarkup([self._back("today")]))
             return
         scheduler = getattr(self, "scheduler", None)
@@ -636,13 +687,15 @@ The AI learns from your confirmed actions and creates reusable patterns.
     
     async def add_exception_today(self, update, context):
         today = local_today()
-        self.sheets.add_exception(today, "day", reason="No class")
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        self.sheets.add_exception(today, "day", reason="No class", chat_id=chat_id)
         await self._show(update, "✅ Marked today as no class.", InlineKeyboardMarkup([self._back("exceptions")]))
     
     async def add_exception_tomorrow(self, update, context):
         from datetime import timedelta
         tomorrow = local_today() + timedelta(days=1)
-        self.sheets.add_exception(tomorrow, "day", reason="No class")
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        self.sheets.add_exception(tomorrow, "day", reason="No class", chat_id=chat_id)
         await self._show(update, "✅ Marked tomorrow as no class.", InlineKeyboardMarkup([self._back("exceptions")]))
     
     async def add_exception_date(self, update, context):
@@ -655,8 +708,9 @@ The AI learns from your confirmed actions and creates reusable patterns.
 
     async def exception_action(self, update, value):
         today = local_today()
+        chat_id = update.effective_chat.id if update.effective_chat else None
         if value == "add_day":
-            self.sheets.add_exception(today, "day", reason="Holiday")
+            self.sheets.add_exception(today, "day", reason="Holiday", chat_id=chat_id)
             await self._show(update, "Holiday added for today.", InlineKeyboardMarkup([self._back("exceptions")]))
         elif value == "add_period":
             periods = self.sheets.get_timetable().get(today.strftime("%A"), {})
@@ -664,10 +718,10 @@ The AI learns from your confirmed actions and creates reusable patterns.
             await self._show(update, "Choose a period for no class:", InlineKeyboardMarkup(rows + [self._back("exceptions")]))
         elif value.startswith("add_period:"):
             _, date_str, period = value.split(":")
-            self.sheets.add_exception(date.fromisoformat(date_str), "period", period=period, reason="No class")
+            self.sheets.add_exception(date.fromisoformat(date_str), "period", period=period, reason="No class", chat_id=chat_id)
             await self._show(update, "No class marked.", InlineKeyboardMarkup([self._back("exceptions")]))
         elif value == "remove_today":
-            removed = self.sheets.deactivate_exception(today, "day")
+            removed = self.sheets.deactivate_exception(today, "day", chat_id=chat_id)
             await self._show(update, "Exception removed." if removed else "No day exception found.", InlineKeyboardMarkup([self._back("exceptions")]))
         elif value == "remove_period":
             periods = [row[2] for row in self.sheets.get_exceptions_for_date(today) if len(row) >= 3 and row[1] == "period"]
@@ -675,7 +729,7 @@ The AI learns from your confirmed actions and creates reusable patterns.
             await self._show(update, "Choose a period exception:", InlineKeyboardMarkup(rows + [self._back("exceptions")]))
         elif value.startswith("remove_period:"):
             _, date_str, period = value.split(":")
-            removed = self.sheets.deactivate_exception(date.fromisoformat(date_str), "period", period)
+            removed = self.sheets.deactivate_exception(date.fromisoformat(date_str), "period", period, chat_id=chat_id)
             await self._show(update, "Exception removed." if removed else "No period exception found.", InlineKeyboardMarkup([self._back("exceptions")]))
 
     async def settings_page(self, update):
@@ -689,13 +743,14 @@ The AI learns from your confirmed actions and creates reusable patterns.
         ]))
 
     async def setting_action(self, update, value):
+        chat_id = update.effective_chat.id if update.effective_chat else None
         if value == "toggle":
             current = self.sheets.get_setting("reminders", "enabled").lower()
-            self.sheets.set_setting("reminders", "disabled" if current == "enabled" else "enabled")
+            self.sheets.set_setting("reminders", "disabled" if current == "enabled" else "enabled", chat_id=chat_id)
         elif value == "delay":
             current = self.sheets.get_setting("reminder_delay", "5")
-            self.sheets.set_setting("reminder_delay", "10" if current == "5" else "5")
+            self.sheets.set_setting("reminder_delay", "10" if current == "5" else "5", chat_id=chat_id)
         elif value == "threshold":
             current = self.sheets.get_setting("threshold", "75")
-            self.sheets.set_setting("threshold", "80" if current == "75" else "75")
+            self.sheets.set_setting("threshold", "80" if current == "75" else "75", chat_id=chat_id)
         await self.settings_page(update)

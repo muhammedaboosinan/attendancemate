@@ -9,7 +9,8 @@ import asyncio
 import atexit
 import signal
 import sys
-from flask import Flask, request
+import json
+from flask import Flask, request, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -31,12 +32,6 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
-
-@app.route("/", methods=["GET", "HEAD"])
-def index():
-    """Simple health endpoint for hosting platform health checks."""
-    return "AttendanceMate is running", 200
-
 # Global variables for bot components
 application = None
 scheduler = None
@@ -44,6 +39,49 @@ bot_loop = None
 scheduler_thread = None
 scheduler_loop = None
 initialized = False
+init_lock = threading.Lock()
+
+@app.route("/", methods=["GET", "HEAD"])
+def index():
+    """Simple health endpoint for hosting platform health checks."""
+    return "AttendanceMate is running", 200
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint."""
+    return jsonify({"status": "healthy", "bot_initialized": initialized}), 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Receive Telegram webhook updates."""
+    global application, bot_loop
+    
+    if not initialized:
+        # Try to initialize if not yet done
+        with init_lock:
+            if not initialized:
+                _start_app_once()
+    
+    if not application or not bot_loop:
+        return jsonify({"ok": False, "error": "Bot not initialized"}), 500
+    
+    try:
+        # Parse the update
+        update_data = request.get_json(force=True)
+        update = Update.de_json(update_data, application.bot)
+        
+        # Process the update on the bot's event loop
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            bot_loop
+        )
+        # Wait for processing with a timeout
+        future.result(timeout=30)
+        
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 def init_bot():
     """Initialize the bot and scheduler."""
@@ -65,9 +103,10 @@ def init_bot():
         # Create Telegram application
         application = Application.builder().token(Config.BOT_TOKEN).build()
         
-        # Initialize the application (required for webhook mode)
+        # Initialize and start the application (required for webhook mode)
         bot_loop.run_until_complete(application.initialize())
-        logger.info("Application initialized")
+        bot_loop.run_until_complete(application.start())
+        logger.info("Application initialized and started")
         
         handlers = BotHandlers(sheets)
 
@@ -180,7 +219,10 @@ def shutdown_handler(signum, frame):
 
 def _start_app_once():
     """Initialize the bot when the first request arrives (worker-safe)."""
+    global initialized
     success = init_bot()
+    if success:
+        initialized = True
 
     # Register cleanup function in worker process
     try:
@@ -207,8 +249,9 @@ def ensure_started():
     if initialized:
         return
     try:
-        _start_app_once()
-        initialized = True
+        with init_lock:
+            if not initialized:
+                _start_app_once()
     except Exception as e:
         logger.error(f"Failed to start app in before_request: {e}")
         # Don't raise; allow request to continue (will likely 500)

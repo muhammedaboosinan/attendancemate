@@ -28,6 +28,7 @@ class ReminderScheduler:
         self.retry_queue = asyncio.Queue()
         self._tasks = []
         self._loop = None
+        self._last_check_date = None
     
     async def start(self):
         """Start the scheduler."""
@@ -148,6 +149,14 @@ class ReminderScheduler:
             return
         today = local_today()
         day_name = today.strftime("%A")
+        
+        # Clear stale reminders when the date changes
+        if self._last_check_date != today:
+            self.sent_reminders.clear()
+            self.answered_reminders.clear()
+            self.queued_retries.clear()
+            self._last_check_date = today
+            logger.info(f"Date changed to {today}, cleared reminder sets")
         
         # Check if today is an exception (holiday)
         if self.sheets.is_exception(today):

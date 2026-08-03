@@ -28,6 +28,7 @@ class SheetsManager:
         self._worksheet_cache = {}
         self._values_cache = {}
         self._cache_ttl_seconds = 3
+        self._suppress_undo = False
         self._connect()
 
     def clear_cache(self):
@@ -336,14 +337,45 @@ class SheetsManager:
         
         return False
     
-    def add_exception(self, check_date: date, scope: str, period: Optional[str] = None, reason: str = "") -> bool:
-        """Add an exception row."""
+    def has_exception(self, check_date: date, scope: str, period: Optional[str] = None) -> bool:
+        """Check if an active exception already exists for the given date/scope/period."""
         exceptions = self._get_worksheet("Exceptions")
         if not exceptions:
             return False
         date_str = check_date.strftime("%Y-%m-%d")
+        rows = self._read_values("Exceptions", exceptions)
+        for row in rows[1:]:  # Skip header
+            if len(row) >= 5 and row[0] == date_str and row[1] == scope and row[4].lower() == "true":
+                if scope == "period":
+                    if row[2] == str(period):
+                        return True
+                else:
+                    return True
+        return False
+
+    def add_exception(self, check_date: date, scope: str, period: Optional[str] = None, reason: str = "", chat_id: Optional[int] = None) -> bool:
+        """Add an exception row. Prevents duplicate active exceptions."""
+        exceptions = self._get_worksheet("Exceptions")
+        if not exceptions:
+            return False
+        date_str = check_date.strftime("%Y-%m-%d")
+        
+        # Prevent duplicate active exceptions
+        if self.has_exception(check_date, scope, period):
+            logger.info(f"Exception already exists for {date_str} scope={scope} period={period}, skipping duplicate")
+            return False
+        
         exceptions.append_row([date_str, scope, period or "", reason, "TRUE"])
         self.clear_cache()
+        
+        # Push undo entry
+        self._push_undo(chat_id, {
+            "action": "add_exception",
+            "date": date_str,
+            "scope": scope,
+            "period": period or "",
+            "reason": reason
+        })
         return True
     
     def get_exceptions_for_date(self, check_date: date):
@@ -406,7 +438,7 @@ class SheetsManager:
         return max(scheduled - cancelled, 0)
     
     def log_attendance(self, check_date: date, day: str, period: str, 
-                       raw_subject: str, status: str, note: str = "") -> bool:
+                       raw_subject: str, status: str, note: str = "", chat_id: Optional[int] = None) -> bool:
         """Log attendance entry. Returns True if successful."""
         attendance_log = self._get_worksheet("Attendance_Log")
         if not attendance_log:
@@ -421,10 +453,22 @@ class SheetsManager:
                 if (row[0] == date_str and row[2] == period and 
                     row[3] == raw_subject):
                     # Update existing entry
+                    old_status = row[5] if len(row) > 5 else ""
                     normalized = self.normalize_subject(raw_subject)
                     timestamp = local_now().isoformat()
                     attendance_log.update(f'F{i}:H{i}', [[status, timestamp, note]])
                     self.clear_cache()
+                    # Push undo entry
+                    self._push_undo(chat_id, {
+                        "action": "log_attendance",
+                        "date": date_str,
+                        "day": day,
+                        "period": period,
+                        "raw_subject": raw_subject,
+                        "old_status": old_status,
+                        "new_status": status,
+                        "note": note
+                    })
                     return True
         
         # Add new entry
@@ -434,9 +478,20 @@ class SheetsManager:
             date_str, day, period, raw_subject, normalized, status, timestamp, note
         ])
         self.clear_cache()
+        # Push undo entry
+        self._push_undo(chat_id, {
+            "action": "log_attendance",
+            "date": date_str,
+            "day": day,
+            "period": period,
+            "raw_subject": raw_subject,
+            "old_status": "",
+            "new_status": status,
+            "note": note
+        })
         return True
     
-    def delete_attendance_entry(self, target_date: date, period: str) -> bool:
+    def delete_attendance_entry(self, target_date: date, period: str, chat_id: Optional[int] = None) -> bool:
         """Delete an attendance entry for a specific date and period."""
         try:
             worksheet = self._get_worksheet("Attendance_Log")
@@ -448,8 +503,20 @@ class SheetsManager:
             
             for i, row in enumerate(rows[1:], start=2):  # Skip header, start from row 2
                 if len(row) >= 4 and row[0] == date_str and row[2] == period:
+                    # Save data for undo before deleting
+                    undo_data = {
+                        "action": "delete_attendance",
+                        "date": date_str,
+                        "day": row[1] if len(row) > 1 else "",
+                        "period": period,
+                        "raw_subject": row[3] if len(row) > 3 else "",
+                        "status": row[5] if len(row) > 5 else "",
+                        "note": row[7] if len(row) > 7 else ""
+                    }
                     worksheet.delete_rows(i)
                     self.clear_cache()
+                    # Push undo entry
+                    self._push_undo(chat_id, undo_data)
                     return True
             
             return False
@@ -660,20 +727,35 @@ class SheetsManager:
         self.clear_cache()
         return True
 
-    def set_setting(self, key: str, value: str) -> bool:
+    def set_setting(self, key: str, value: str, chat_id: Optional[int] = None) -> bool:
         settings = self._get_worksheet("Settings")
         if not settings:
             return False
         for index, row in enumerate(self._read_values("Settings", settings)[1:], start=2):
             if len(row) >= 1 and row[0].strip().lower() == key.lower():
+                old_value = row[1] if len(row) > 1 else ""
                 settings.update(f"B{index}", [[str(value)]])
                 self.clear_cache()
+                # Push undo entry
+                self._push_undo(chat_id, {
+                    "action": "set_setting",
+                    "key": key,
+                    "old_value": old_value,
+                    "new_value": str(value)
+                })
                 return True
         settings.append_row([key, str(value)])
         self.clear_cache()
+        # Push undo entry
+        self._push_undo(chat_id, {
+            "action": "set_setting",
+            "key": key,
+            "old_value": "",
+            "new_value": str(value)
+        })
         return True
 
-    def deactivate_exception(self, check_date: date, scope: str, period: Optional[str] = None) -> bool:
+    def deactivate_exception(self, check_date: date, scope: str, period: Optional[str] = None, chat_id: Optional[int] = None) -> bool:
         exceptions = self._get_worksheet("Exceptions")
         if not exceptions:
             return False
@@ -684,8 +766,184 @@ class SheetsManager:
                     row[4].lower() == "true"):
                 exceptions.update(f"E{index}", [["FALSE"]])
                 self.clear_cache()
+                # Push undo entry
+                self._push_undo(chat_id, {
+                    "action": "deactivate_exception",
+                    "date": date_str,
+                    "scope": scope,
+                    "period": period or "",
+                    "reason": row[3] if len(row) > 3 else ""
+                })
                 return True
         return False
+    
+    # ========== Undo System ==========
+    
+    def _push_undo(self, chat_id: Optional[int], undo_data: dict) -> bool:
+        """Push an undo entry to the AI_Undo_Stack sheet."""
+        if self._suppress_undo:
+            return False
+        try:
+            undo_stack = self._get_worksheet("AI_Undo_Stack")
+            if not undo_stack:
+                return False
+            import json
+            from datetime import timedelta
+            expiry = (local_now() + timedelta(minutes=30)).isoformat()
+            undo_stack.append_row([str(chat_id or ""), json.dumps(undo_data), expiry])
+            self.clear_cache()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to push undo entry: {e}")
+            return False
+    
+    def get_undo_entry(self, chat_id: int) -> Optional[dict]:
+        """Get the latest undo entry for a chat, if not expired."""
+        try:
+            undo_stack = self._get_worksheet("AI_Undo_Stack")
+            if not undo_stack:
+                return None
+            rows = self._read_values("AI_Undo_Stack", undo_stack)
+            if len(rows) < 2:
+                return None
+            
+            chat_str = str(chat_id)
+            
+            # Find the latest non-expired entry for this chat
+            for i in range(len(rows) - 1, 0, -1):
+                row = rows[i]
+                if len(row) >= 3 and row[0] == chat_str:
+                    try:
+                        expiry = datetime.fromisoformat(row[2])
+                        if expiry > local_now():
+                            import json
+                            return {
+                                "row_index": i + 1,
+                                "data": json.loads(row[1])
+                            }
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get undo entry: {e}")
+            return None
+    
+    def pop_undo_entry(self, chat_id: int) -> Optional[dict]:
+        """Get and remove the latest undo entry for a chat."""
+        try:
+            undo_stack = self._get_worksheet("AI_Undo_Stack")
+            if not undo_stack:
+                return None
+            rows = self._read_values("AI_Undo_Stack", undo_stack)
+            if len(rows) < 2:
+                return None
+            
+            chat_str = str(chat_id)
+            now_iso = local_now().isoformat()
+            
+            # Find the latest non-expired entry for this chat
+            for i in range(len(rows) - 1, 0, -1):
+                row = rows[i]
+                if len(row) >= 3 and row[0] == chat_str:
+                    try:
+                        expiry = datetime.fromisoformat(row[2])
+                        if expiry > local_now():
+                            import json
+                            data = json.loads(row[1])
+                            # Delete the row
+                            undo_stack.delete_rows(i + 1)
+                            self.clear_cache()
+                            return data
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Failed to pop undo entry: {e}")
+            return None
+    
+    def undo_action(self, chat_id: int) -> dict:
+        """Undo the latest action for a chat. Returns result dict."""
+        undo_data = self.pop_undo_entry(chat_id)
+        if not undo_data:
+            return {"success": False, "message": "No recent action to undo."}
+        
+        action = undo_data.get("action", "")
+        
+        # Suppress undo entries during undo operations to prevent recursive undo stacking
+        self._suppress_undo = True
+        
+        try:
+            if action == "add_exception":
+                # Undo: deactivate the exception
+                check_date = date.fromisoformat(undo_data["date"])
+                scope = undo_data.get("scope", "day")
+                period = undo_data.get("period") or None
+                removed = self.deactivate_exception(check_date, scope, period)
+                if removed:
+                    return {"success": True, "message": f"Undid: Removed exception for {undo_data['date']}"}
+                return {"success": False, "message": "Exception was already removed."}
+            
+            elif action == "deactivate_exception":
+                # Undo: re-activate the exception
+                check_date = date.fromisoformat(undo_data["date"])
+                scope = undo_data.get("scope", "day")
+                period = undo_data.get("period") or None
+                reason = undo_data.get("reason", "")
+                added = self.add_exception(check_date, scope, period, reason)
+                if added:
+                    return {"success": True, "message": f"Undid: Restored exception for {undo_data['date']}"}
+                return {"success": False, "message": "Could not restore exception."}
+            
+            elif action == "log_attendance":
+                # Undo: restore old status or delete if it was a new entry
+                check_date = date.fromisoformat(undo_data["date"])
+                period = undo_data.get("period", "")
+                old_status = undo_data.get("old_status", "")
+                day = undo_data.get("day", "")
+                raw_subject = undo_data.get("raw_subject", "")
+                note = undo_data.get("note", "")
+                
+                if old_status:
+                    # It was an update - restore old status
+                    restored = self.log_attendance(check_date, day, period, raw_subject, old_status, note)
+                    if restored:
+                        return {"success": True, "message": f"Undid: Restored attendance to '{old_status}' for {undo_data['date']} period {period}"}
+                    return {"success": False, "message": "Could not restore attendance status."}
+                else:
+                    # It was a new entry - delete it
+                    deleted = self.delete_attendance_entry(check_date, period)
+                    if deleted:
+                        return {"success": True, "message": f"Undid: Deleted attendance entry for {undo_data['date']} period {period}"}
+                    return {"success": False, "message": "Attendance entry was already deleted."}
+            
+            elif action == "delete_attendance":
+                # Undo: re-add the attendance entry
+                check_date = date.fromisoformat(undo_data["date"])
+                day = undo_data.get("day", "")
+                period = undo_data.get("period", "")
+                raw_subject = undo_data.get("raw_subject", "")
+                status = undo_data.get("status", "")
+                note = undo_data.get("note", "")
+                added = self.log_attendance(check_date, day, period, raw_subject, status, note)
+                if added:
+                    return {"success": True, "message": f"Undid: Restored attendance entry for {undo_data['date']} period {period}"}
+                return {"success": False, "message": "Could not restore attendance entry."}
+            
+            elif action == "set_setting":
+                # Undo: restore previous setting value
+                key = undo_data.get("key", "")
+                old_value = undo_data.get("old_value", "")
+                self.set_setting(key, old_value)
+                return {"success": True, "message": f"Undid: Restored setting {key} to {old_value}"}
+            
+            else:
+                return {"success": False, "message": f"Unknown action type: {action}"}
+        except Exception as e:
+            logger.error(f"Failed to undo action: {e}")
+            return {"success": False, "message": f"Failed to undo: {e}"}
+        finally:
+            # Always re-enable undo tracking after undo operation completes
+            self._suppress_undo = False
     
     def get_attendance_stats(self, start_date: Optional[date] = None,
                              end_date: Optional[date] = None) -> dict:
