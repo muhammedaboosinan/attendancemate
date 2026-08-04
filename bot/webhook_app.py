@@ -100,8 +100,8 @@ def init_bot():
         bot_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(bot_loop)
 
-        # Create Telegram application
-        application = Application.builder().token(Config.BOT_TOKEN).build()
+        # Create Telegram application - disable updater to prevent getUpdates polling in webhook mode
+        application = Application.builder().token(Config.BOT_TOKEN).updater(None).build()
         
         # Initialize and start the application (required for webhook mode)
         bot_loop.run_until_complete(application.initialize())
@@ -143,7 +143,7 @@ def init_bot():
                 finally:
                     # Cancel any remaining tasks
                     try:
-                        pending = asyncio.all_tasks(scheduler_loop)
+                        pending = [t for t in asyncio.all_tasks(scheduler_loop) if not t.done()]
                         for task in pending:
                             task.cancel()
                         if pending:
@@ -208,8 +208,18 @@ def cleanup_scheduler():
 
 def shutdown_handler(signum, frame):
     """Handle shutdown signals gracefully."""
+    global application, bot_loop
     logger.info(f"Received signal {signum}, shutting down...")
     cleanup_scheduler()
+    # Stop the application
+    if application and bot_loop:
+        try:
+            logger.info("Stopping application...")
+            future = asyncio.run_coroutine_threadsafe(application.stop(), bot_loop)
+            future.result(timeout=5.0)
+            logger.info("Application stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping application: {e}")
     # Exit gracefully
     try:
         sys.exit(0)

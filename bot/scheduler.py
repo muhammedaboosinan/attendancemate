@@ -61,6 +61,12 @@ class ReminderScheduler:
                 )
             except asyncio.TimeoutError:
                 logger.warning("Timed out waiting for scheduler tasks to stop")
+                # Force-cancel any remaining tasks to avoid "Task was destroyed" warnings
+                for task in self._tasks:
+                    if not task.done():
+                        task.cancel()
+                # Give cancelled tasks a final chance to process CancelledError
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Error while stopping scheduler tasks: {e}")
         
@@ -114,7 +120,11 @@ class ReminderScheduler:
         while self.running:
             try:
                 await self._check_periods()
-                await asyncio.sleep(60 * Config.CHECK_INTERVAL_MINUTES)
+                # Use a shorter sleep and check running flag to respond faster to cancellation
+                for _ in range(60 * Config.CHECK_INTERVAL_MINUTES):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(1)
             except asyncio.CancelledError:
                 logger.info("Check loop cancelled")
                 break
@@ -128,20 +138,24 @@ class ReminderScheduler:
             try:
                 if not self.retry_queue.empty():
                     reminder_data = await self.retry_queue.get()
-                    await asyncio.sleep(60 * Config.REMINDER_RETRY_MINUTES)
+                    # Use shorter sleeps to respond faster to cancellation
+                    for _ in range(60 * Config.REMINDER_RETRY_MINUTES):
+                        if not self.running:
+                            break
+                        await asyncio.sleep(1)
                     await self._send_reminder(
                         reminder_data["period"],
                         reminder_data["subject"],
                         reminder_data["date"]
                     )
                 else:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(1)
             except asyncio.CancelledError:
                 logger.info("Retry loop cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in retry loop: {e}")
-                await asyncio.sleep(10)
+                await asyncio.sleep(1)
     
     async def _check_periods(self):
         """Check if any period has ended and send reminders."""
