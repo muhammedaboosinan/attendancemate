@@ -40,6 +40,9 @@ class Config:
         if key.startswith("API_KEY_") and value.strip()
     ))
     
+    # Webhook configuration
+    WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
+    
     # Paths
     BASE_DIR: Path = Path(__file__).parent.parent
     LOG_DIR: Path = BASE_DIR / "logs"

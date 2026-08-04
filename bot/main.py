@@ -34,8 +34,7 @@ def main():
     use_webhook = os.environ.get('USE_WEBHOOK', 'false').lower() == 'true'
     
     if use_webhook:
-        logger.info("Webhook mode requested - use bot/flask_main.py instead")
-        print("❌ For webhook mode, please run: python -m bot.flask_main")
+        logger.info("Webhook mode not supported via main.py. Use gunicorn bot.webhook_app:app for production.")
         return
     
     # Polling mode (local development)

@@ -161,7 +161,35 @@ def init_bot():
         else:
             logger.warning("TELEGRAM_CHAT_ID not set. Reminders will not be sent.")
 
+        # Run bot event loop in background thread so webhook updates can be processed
+        def run_bot_loop():
+            asyncio.set_event_loop(bot_loop)
+            try:
+                bot_loop.run_forever()
+            except Exception as e:
+                logger.error(f"Bot loop error: {e}")
+        
+        bot_thread = threading.Thread(target=run_bot_loop, daemon=True)
+        bot_thread.start()
+        logger.info("Bot event loop started in background thread")
+
         logger.info("Bot initialized successfully")
+        
+        # Set webhook URL if configured
+        webhook_url = Config.WEBHOOK_URL
+        if not webhook_url:
+            render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+            if render_url:
+                webhook_url = render_url.rstrip("/") + "/webhook"
+        
+        if webhook_url:
+            async def _set_webhook():
+                await application.bot.set_webhook(url=webhook_url)
+            bot_loop.run_until_complete(_set_webhook())
+            logger.info(f"Webhook URL set to: {webhook_url}")
+        else:
+            logger.warning("No WEBHOOK_URL or RENDER_EXTERNAL_URL set. Bot will run in polling-like mode.")
+        
         return True
         
     except Exception as e:
@@ -230,17 +258,22 @@ def shutdown_handler(signum, frame):
 def _start_app_once():
     """Initialize the bot when the first request arrives (worker-safe)."""
     global initialized
+    if initialized:
+        return True
+    
     success = init_bot()
-    if success:
-        initialized = True
-
+    if not success:
+        return False
+    
+    initialized = True
+    
     # Register cleanup function in worker process
     try:
         atexit.register(cleanup_scheduler)
         logger.info("Cleanup function registered")
     except Exception as e:
         logger.warning(f"Could not register cleanup function: {e}")
-
+    
     # Register signal handlers for graceful shutdown in this process
     try:
         signal.signal(signal.SIGTERM, shutdown_handler)
@@ -248,7 +281,7 @@ def _start_app_once():
         logger.info("Signal handlers registered")
     except Exception as e:
         logger.warning(f"Could not register signal handlers: {e}")
-
+    
     return success
 
 
@@ -266,3 +299,10 @@ def ensure_started():
         logger.error(f"Failed to start app in before_request: {e}")
         # Don't raise; allow request to continue (will likely 500)
         initialized = False
+
+
+# Initialize bot at module load time for gunicorn/Flask startup
+try:
+    _start_app_once()
+except Exception as e:
+    logger.warning(f"Startup initialization failed, will retry on first request: {e}")
